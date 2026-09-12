@@ -7,17 +7,43 @@ from .models import Room
 from .settings import Settings
 
 
+def _oneline(text: str) -> str:
+    """Join a message for terminal output: newlines become spaces.
+
+    Stored Message.text and JSON files keep the original line breaks;
+    only screen output is flattened.
+    """
+    return " ".join((text or "").splitlines())
+
+
 def _display(m) -> str:
-    """Readable line: text, or media label when the bubble has no text."""
+    """Full text on one line, or media label when the bubble has no text."""
     if m.text:
-        return m.text[:80]
+        return _oneline(m.text)
     if m.type == "image":
         return f"[รูปภาพ: {m.media or 'โหลดไม่สำเร็จ'}]"
     if m.type == "sticker":
         return "[สติกเกอร์]"
     if m.type == "system":
-        return m.text
+        return _oneline(m.text)
     return f"[{m.type}]"
+
+
+def _display_dict(m: dict) -> str:
+    """Dict version of _display for search hits (plain dicts, not Message)."""
+    text = _oneline(m.get("text") or "")
+    if text:
+        return text
+    if m.get("type") == "image":
+        return f"[รูปภาพ: {m.get('media') or 'โหลดไม่สำเร็จ'}]"
+    if m.get("type") == "sticker":
+        return "[สติกเกอร์]"
+    return f"[{m.get('type')}]"
+
+
+def _who(sender: str) -> str:
+    """Sender prefix for one output line; system rows have none."""
+    return f"{sender}: " if sender else ""
 
 
 def pick_room(rooms: list[Room]) -> Room:
@@ -33,9 +59,21 @@ def pick_room(rooms: list[Room]) -> Room:
         print("เลขไม่ถูกต้อง ลองใหม่")
 
 
+def ask_limit(default: int = 5) -> int:
+    """Ask how many messages to fetch. Empty = default, 0 = all rendered."""
+    while True:
+        raw = input(f"จำนวนข้อความ (default {default}, 0=ทั้งหมด) > ").strip()
+        if not raw:
+            return default
+        if raw.isdigit():
+            return int(raw)
+        print("ตัวเลขไม่ถูกต้อง ลองใหม่")
+
+
 def main():
     parser = argparse.ArgumentParser(description="ดึงข้อความล่าสุดจาก LINE Extension")
-    parser.add_argument("--limit", type=int, default=5, help="จำนวนข้อความล่าสุด")
+    parser.add_argument("--limit", type=int, default=None,
+                        help="จำนวนข้อความล่าสุด (ไม่ใส่จะถามตอนเลือกห้อง)")
     parser.add_argument("--date", default=None, help="กรองเฉพาะวันที่ YYYY-MM-DD")
     parser.add_argument("--date-from", default=None, help="ตั้งแต่วันที่ YYYY-MM-DD")
     parser.add_argument("--date-to", default=None, help="ถึงวันที่ YYYY-MM-DD")
@@ -56,6 +94,12 @@ def main():
                         help="เจอหน้าล็อกอินแล้วจบเลย ไม่รอ")
     parser.add_argument("--login-timeout-s", type=float, default=None, metavar="SEC",
                         help="เวลารอสูงสุดเป็นวินาที (default 300)")
+    parser.add_argument("--no-scroll-msgs", dest="no_scroll_msgs", action="store_true",
+                        help="อ่านแค่ข้อความบนจอ ไม่เลื่อนย้อนหลัง")
+    parser.add_argument("--scroll-budget-s", type=float, default=None, metavar="SEC",
+                        help="งบเวลาเลื่อนโหลดสูงสุดเป็นวินาที (default 8)")
+    parser.add_argument("--debug-scroll", dest="debug_scroll", action="store_true", default=None,
+                        help="พิมพ์ telemetry การเลื่อนทีละรอบ")
     args = parser.parse_args()
 
     wait_flag = None
@@ -64,7 +108,14 @@ def main():
     elif args.wait_login:
         wait_flag = True
     wait_ms = int(args.login_timeout_s * 1000) if args.login_timeout_s is not None else None
-    settings = Settings(login_wait_ms=wait_ms) if wait_ms is not None else None
+    overrides: dict = {}
+    if wait_ms is not None:
+        overrides["login_wait_ms"] = wait_ms
+    if args.scroll_budget_s is not None:
+        overrides["messages_scroll_ms"] = int(args.scroll_budget_s * 1000)
+    if args.debug_scroll:
+        overrides["debug_scroll"] = True
+    settings = Settings(**overrides) if overrides else None
 
     try:
         with LineClient(settings) as line:
@@ -85,16 +136,19 @@ def main():
                 path = line.save_rooms(unread_only=args.unread)
                 print(f"บันทึก {path} ({len(rooms)} ห้อง)")
             if args.search:
-                for hit in line.search_all(args.search, date_from=args.date_from,
+                for hit in line.search_all(args.search,
+                                           date_from=args.date_from or args.date,
                                            date_to=args.date_to or args.date):
                     print(f"\n== {hit['room']['name']} ({len(hit['messages'])} ข้อความ) ==")
                     for m in hit["messages"]:
-                        print(f"[{m['date']} {m['ts']}] {m['sender']}: {m['text'][:80]}")
+                        print(f"[{m['date']} {m['ts']}] {_who(m['sender'])}{_display_dict(m)}")
                 return
             chosen = pick_room(rooms)
-            filt = dict(limit=args.limit, date=args.date, date_from=args.date_from,
+            limit = max(0, args.limit) if args.limit is not None else ask_limit()
+            filt = dict(limit=limit, date=args.date, date_from=args.date_from,
                         date_to=args.date_to, time_from=args.time_from, time_to=args.time_to,
-                        sender=args.sender, keyword=args.keyword, media_dir="media")
+                        sender=args.sender, keyword=args.keyword, media_dir="media",
+                        scroll=not args.no_scroll_msgs)
             if args.save:
                 out = line.save_messages(chosen, **filt)
                 print(f"บันทึก {out}")
@@ -105,7 +159,7 @@ def main():
                 print(f"รัน uv run line-ext-msg --dump-room {chosen.index} แล้วส่ง line_room.html มา")
                 return
             for m in msgs:
-                print(f"[{m.date} {m.ts}] {m.sender}: {_display(m)}")
+                print(f"[{m.date} {m.ts}] {_who(m.sender)}{_display(m)}")
     except KeyboardInterrupt:
         print("\nยกเลิกการรอแล้ว")
     except LineError as e:

@@ -64,7 +64,7 @@ def _scroll_to_load(page: Page, settings: Settings) -> None:
                     let sc = list;
                     while (sc && sc !== document.body) {
                         const st = getComputedStyle(sc);
-                        if (st.overflowY === 'auto' || st.overflowY === 'scroll') break;
+                        if (st.overflowY === 'auto' || st.overflowY === 'scroll' || st.overflowY === 'overlay') break;
                         sc = sc.parentElement;
                     }
                     (sc || list).scrollTop = (sc || list).scrollHeight;

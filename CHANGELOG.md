@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- Message backfill: `get_messages` scrolls the chat up until `limit` rows render (bounded by `LINE_EXT_MSG_MSGS_SCROLL_MS`, default 8s), stops early past `date_from`; `scroll=False` or `--no-scroll-msgs` restores on-screen-only reads
+- Backfill honesty fix: top-reached is read before scrolling (not after setting it), scroll moves one viewport per round with 1000ms settle, stops only after 5 steady rounds at the real top, prints progress and stop reason when not quiet
+- Correctness fix: room DOM is newest-first (verified in two room dumps), so `limit` now slices from the head (`out[:limit]`); previously it returned the oldest rendered rows
+- Accumulation fix: messages merge into a SeenMap every scroll round, so newest rows unloaded mid-scroll (e.g. Sep 12 messages lost while backfilling) stay in the result; full extraction runs only when the rendered id signature changes, and images download once per id
+- System rows: strip glued clock prefix (`3:43 PMw.siri...` to `w.siri...`), omit the empty `sender: ` prefix in CLI output, and exclude system rows from `sender_stats`
+- Backfill wake-up: nudge down-and-up when parked at the top (a no-op set fires no scroll event, starving the loader), track `scrollHeight` alongside count, scale time budget with `need` (150ms each, 30s cap), report round count in the stop line; `--scroll-budget-s` overrides the base budget
+- Hotfix: `_scroll_up_one` JS took two params but Playwright passes one arg, so every scroll threw into a bogus `detached` stop with zero rounds; scripts now take a single object, guarded by a test scanning all top-level evaluate arrows
+- Scroll the right box: accept `overflow: overlay` (what LINE reports) and prefer `chatroomContent-module__content_area` directly; log the chosen box each run; when sets stop moving anything, fall back to a real `mouse.wheel` over the list (up to 3 pokes)
+- Excursion instead of nudges: parked at the top, dive two viewports deep and return to the edge so edge-triggered loaders wake up; track the `data-scroll-date` anchor as loader-activity signal; log every wheel attempt
+- Spike tooling: shared scroll-box picker prefers a box that is really scrollable (height-checked) instead of assuming the selector; box log now shows clientHeight; `--debug-scroll` (or `LINE_EXT_MSG_DEBUG_SCROLL=1`) prints per-round top/height/count/have/date telemetry
+- Park instead of yank: parked at the top, hold scrollTop at 0 and give the loader quiet time; transient probe failures burn one step and retry instead of aborting as `detached`; wheel fallback dips down first then back up to re-enter the top edge
+- Direction probe: measure whether scrollTop goes negative (column-reverse world) before looping, scroll and stop at the correct older edge per direction, accept negative tops instead of reporting `detached`; box state now carries clientHeight too
+- Stride scrolling: each round covers half the remaining distance (1-4 viewports) instead of one fixed viewport, so a 13kpx box reaches its edge in ~5 rounds; the time budget is now a last-resort guard (need * 1000ms, 300s cap) and the loop runs until need/top/date stops it
+- Faster text reads: message `_text` timeout 3000ms down to 500ms
+
 ## 1.0.0
 
 First stable release: OOP facade, extended schema, filters, search, media.

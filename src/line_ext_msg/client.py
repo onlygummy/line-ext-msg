@@ -178,13 +178,15 @@ class LineClient:
         keyword: str | None = None,
         media_dir: str | None = None,
         include_media_data: bool = False,
+        scroll: bool = True,
     ) -> list[Message]:
         """Latest messages, optionally opening a room first and filtering.
 
-        Only rendered rows are visible (virtualized list); wide ranges
-        still return just what the DOM holds. media_dir=None keeps the
-        call side-effect free; set it to download image bubbles.
-        include_media_data embeds data URIs (for MCP/AI, off by default).
+        Older rows are scrolled into view first (bounded by
+        settings.messages_scroll_ms); scroll=False reads only what the
+        DOM already holds. media_dir=None keeps the call side-effect
+        free; set it to download image bubbles. include_media_data
+        embeds data URIs (for MCP/AI, off by default).
         """
         if room is not None:
             rooms = self.list_rooms()
@@ -193,7 +195,7 @@ class LineClient:
             self._ready_page(), self.settings, limit=limit, date=date,
             date_from=date_from, date_to=date_to, time_from=time_from,
             time_to=time_to, sender=sender, keyword=keyword, media_dir=media_dir,
-            include_media_data=include_media_data,
+            include_media_data=include_media_data, scroll=scroll,
         )
 
     def unread_digest(self) -> list[dict]:
@@ -295,6 +297,7 @@ class LineClient:
         keyword: str | None = None,
         media_dir: str | None = None,
         include_media_data: bool = False,
+        scroll: bool = True,
         path: str | None = None,
     ) -> str:
         """Open room, fetch messages, save JSON. The only message method that writes files."""
@@ -305,6 +308,7 @@ class LineClient:
             limit=limit, date=date, date_from=date_from, date_to=date_to,
             time_from=time_from, time_to=time_to, sender=sender, keyword=keyword,
             media_dir=media_dir, include_media_data=include_media_data,
+            scroll=scroll,
         )
         out = path or f"messages_{room.index}.json"
         _storage.save_json(out, {
