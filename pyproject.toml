@@ -21,7 +21,7 @@ dev = ["pytest>=8"]
 line-ext-msg = "line_ext_msg.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/ITC6910120/line-extension-get-message"
+Homepage = "https://github.com/onlygummy/line-ext-msg"
 
 [build-system]
 requires = ["hatchling"]
