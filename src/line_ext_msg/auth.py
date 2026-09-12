@@ -29,30 +29,88 @@ def _has_login_ui(page: Page) -> bool:
     return False
 
 
+def _has_chat_ui(page: Page) -> bool:
+    """True if any room row is rendered (user is logged in)."""
+    # Single combined query is one CDP roundtrip instead of one per split.
+    try:
+        return page.locator(SELECTORS["room_item"]).count() > 0
+    except Exception:
+        return False
+
+
+def _body_has_login(page: Page) -> bool:
+    """Fallback text scan when locators miss (e.g. UI update)."""
+    try:
+        text = (page.inner_text("body") or "").lower()
+    except Exception:
+        return False
+    return any(m in text for m in LOGIN_MARKERS)
+
+
 def check_login(page: Page, timeout_ms: int = 10000) -> tuple[bool, str]:
     """Poll chat UI vs login UI; return as soon as either appears.
 
     Return (logged_in, reason): 'chat' / 'login' / 'unknown'.
     Caller must ensure the app finished rendering (wait_for_app_ready).
     """
-    # Poll room rows (not the container: it may not exist as one element).
-    rows = [s.strip() for s in SELECTORS["room_item"].split(",")]
-    # Poll every 500ms; worst case only when page genuinely stuck.
-    for _ in range(max(1, timeout_ms // 500)):
-        for sel in rows:
-            try:
-                if page.locator(sel).count() > 0:
-                    return True, "chat"
-            except Exception:
-                continue
-        if _has_login_ui(page):
-            return False, "login"
-        page.wait_for_timeout(500)
-    # Final text fallback on rendered body before giving up.
+    # Fast path: wake the moment rooms render instead of sleeping blindly.
     try:
-        text = (page.inner_text("body") or "").lower()
+        page.wait_for_selector(SELECTORS["room_item"], state="attached", timeout=timeout_ms)
+        return True, "chat"
     except Exception:
-        text = ""
-    if any(m in text for m in LOGIN_MARKERS):
+        pass
+    if _has_chat_ui(page):
+        return True, "chat"
+    if _has_login_ui(page):
+        return False, "login"
+    # Final text fallback on rendered body before giving up.
+    if _body_has_login(page):
+        return False, "login"
+    return False, "unknown"
+
+
+def wait_for_login(
+    page: Page,
+    timeout_ms: int = 300000,
+    poll_ms: int = 500,
+    on_tick=None,
+) -> tuple[bool, str]:
+    """Keep tracking the login page until chat rows appear or timeout.
+
+    Returns (logged_in, reason): 'chat' on success, 'login' when the
+    timeout expires while still on the login screen, 'unknown' when
+    neither chat nor login UI was ever seen (likely selector mismatch).
+
+    on_tick(elapsed_ms) is called after each poll so the caller can
+    print progress. KeyboardInterrupt is never swallowed here.
+    """
+    step = max(100, poll_ms)
+    elapsed = 0
+    seen_login = False
+    polls = 0
+    while elapsed < max(step, timeout_ms):
+        if _has_chat_ui(page):
+            return True, "chat"
+        if _has_login_ui(page):
+            seen_login = True
+        elif polls % 10 == 0 and _body_has_login(page):
+            # inner_text(body) serializes the whole DOM: expensive, so use
+            # it as a slow fallback only (every ~5s), not every 500ms poll.
+            seen_login = True
+        if on_tick is not None:
+            try:
+                on_tick(elapsed)
+            except Exception:
+                pass
+        try:
+            page.wait_for_timeout(step)
+        except Exception:
+            # Page closed or detached mid-wait: treat as unknown.
+            return False, "unknown"
+        elapsed += step
+        polls += 1
+    if _has_chat_ui(page):
+        return True, "chat"
+    if seen_login or _has_login_ui(page) or _body_has_login(page):
         return False, "login"
     return False, "unknown"

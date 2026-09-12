@@ -4,6 +4,7 @@ import argparse
 from .client import LineClient
 from .errors import LineError
 from .models import Room
+from .settings import Settings
 
 
 def _display(m) -> str:
@@ -49,15 +50,29 @@ def main():
     parser.add_argument("--dump", action="store_true", help="บันทึก DOM ดิบเพื่อจูน selector")
     parser.add_argument("--dump-room", type=int, default=None, metavar="INDEX",
                         help="เปิดห้องลำดับ INDEX แล้วบันทึก DOM เพื่อจูน selector ข้อความ")
+    parser.add_argument("--wait-login", dest="wait_login", action="store_true", default=None,
+                        help="รอหน้าล็อกอินจนกว่าจะล็อกอินเสร็จ (default ในโหมดคนใช้)")
+    parser.add_argument("--no-wait-login", dest="no_wait_login", action="store_true",
+                        help="เจอหน้าล็อกอินแล้วจบเลย ไม่รอ")
+    parser.add_argument("--login-timeout-s", type=float, default=None, metavar="SEC",
+                        help="เวลารอสูงสุดเป็นวินาที (default 300)")
     args = parser.parse_args()
 
+    wait_flag = None
+    if args.no_wait_login:
+        wait_flag = False
+    elif args.wait_login:
+        wait_flag = True
+    wait_ms = int(args.login_timeout_s * 1000) if args.login_timeout_s is not None else None
+    settings = Settings(login_wait_ms=wait_ms) if wait_ms is not None else None
+
     try:
-        with LineClient() as line:
+        with LineClient(settings) as line:
             if args.dump:
                 state = line.dump_page()
                 print(f"บันทึก line_dom.html แล้ว (state={state}) ส่งไฟล์นี้มาเพื่อจูน selector")
                 return
-            line.status()
+            line.status(wait_for_login=wait_flag, login_timeout_ms=wait_ms)
             if args.dump_room is not None:
                 room = line.dump_room(args.dump_room)
                 print(f"บันทึก line_room.html แล้ว (ห้อง {room.name}) ส่งไฟล์นี้มาเพื่อจูน selector ข้อความ")
@@ -91,6 +106,8 @@ def main():
                 return
             for m in msgs:
                 print(f"[{m.date} {m.ts}] {m.sender}: {_display(m)}")
+    except KeyboardInterrupt:
+        print("\nยกเลิกการรอแล้ว")
     except LineError as e:
         print(e)
 

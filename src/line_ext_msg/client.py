@@ -58,8 +58,18 @@ class LineClient:
 
     # -- startup checklist (also serves MCP line_status) --------------
 
-    def status(self) -> list[StepResult]:
-        """Run the 5 readiness checks. Raises typed LineError on first failure."""
+    def status(
+        self,
+        wait_for_login: bool | None = None,
+        login_timeout_ms: int | None = None,
+    ) -> list[StepResult]:
+        """Run the 5 readiness checks. Raises typed LineError on first failure.
+
+        When the login screen is showing and waiting is enabled, keep
+        tracking it until chat rows appear instead of failing at once.
+        Default waits in interactive use, stays fail-fast when quiet
+        (library/MCP) unless the caller opts in explicitly.
+        """
         steps = self._steps
         if not self.settings.quiet:
             print("[0/5] เริ่มตรวจเงื่อนไข...", flush=True)
@@ -104,6 +114,27 @@ class LineClient:
             raise AppNotReady("แอปโหลดไม่เสร็จในเวลาที่กำหนด ลองรันใหม่")
 
         logged_in, reason = auth.check_login(self._page, self.settings.login_poll_ms)
+        # Interactive CLI waits by default; quiet library use stays fail-fast.
+        should_wait = wait_for_login if wait_for_login is not None else not self.settings.quiet
+        wait_ms = login_timeout_ms if login_timeout_ms is not None else self.settings.login_wait_ms
+        if not logged_in and reason == "login" and should_wait and wait_ms > 0:
+            if not self.settings.quiet:
+                print("ยังไม่ล็อกอิน กรุณาล็อกอินในหน้าต่าง Chrome ที่เปิดไว้ โปรแกรมกำลังรอ...", flush=True)
+                print("กด Ctrl+C เพื่อยกเลิก", flush=True)
+            last_ping = [0]
+
+            def _tick(elapsed_ms: int) -> None:
+                # Throttle progress to one line per ~10s to avoid log spam.
+                if self.settings.quiet:
+                    return
+                if elapsed_ms - last_ping[0] >= 10000:
+                    last_ping[0] = elapsed_ms
+                    print(f"  ... รอการล็อกอิน ({elapsed_ms // 1000} วิ)", flush=True)
+
+            logged_in, reason = auth.wait_for_login(self._page, wait_ms, on_tick=_tick)
+            if logged_in:
+                record("ล็อกอินแล้ว", True, detail="ล็อกอินสำเร็จระหว่างรอ")
+                return results
         detail = "โครงหน้าเว็บไม่ตรง selector ที่รู้จัก" if reason == "unknown" and not logged_in else ""
         if not record("ล็อกอินแล้ว", logged_in,
                        detail=detail, hint="เปิดแท็บ LINE ล็อกอินด้วย QR/อีเมลก่อน แล้วรันใหม่").passed:

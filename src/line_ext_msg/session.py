@@ -100,14 +100,26 @@ def ensure_line_page(context: BrowserContext, settings: Settings, browser: Brows
     close_duplicate_line_targets(settings)
     page = find_line_page(browser if browser is not None else context, settings.extension_id)
     if page is not None:
-        page.bring_to_front()
-        page.wait_for_load_state("domcontentloaded")
+        try:
+            page.bring_to_front()
+        except Exception:
+            pass
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=10000)
+        except Exception:
+            pass
         goto_chats(page, settings)
         return page
     page = context.new_page()
     page.goto(settings.chats_url)
-    page.bring_to_front()
-    page.wait_for_load_state("domcontentloaded")
+    try:
+        page.bring_to_front()
+    except Exception:
+        pass
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=10000)
+    except Exception:
+        pass
     return page
 
 
@@ -153,13 +165,26 @@ def wait_ready(page: Page, settings: Settings) -> str:
             "() => !document.querySelector('div.is_loading')",
             timeout=settings.app_ready_ms,
         )
-        page.wait_for_timeout(2000)
-        return "ready"
     except Exception:
         try:
             return "loading" if page.locator("div.is_loading").count() > 0 else "ready"
         except Exception:
             return "timeout"
+    # Give the chat list (or login screen) a moment to render so step [5/5]
+    # does not burn its whole poll while rows are already on the way.
+    try:
+        page.wait_for_selector(
+            f"{SELECTORS['room_item']}, [class*='loginPage']",
+            state="attached",
+            timeout=min(10000, settings.app_ready_ms),
+        )
+    except Exception:
+        pass
+    try:
+        page.wait_for_timeout(800)
+    except Exception:
+        pass
+    return "ready"
 
 
 def open_store_page(context: BrowserContext, settings: Settings) -> None:
