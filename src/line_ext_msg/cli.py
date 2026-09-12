@@ -160,6 +160,8 @@ def main():
                 return
             for m in msgs:
                 print(f"[{m.date} {m.ts}] {_who(m.sender)}{_display(m)}")
+            if not line.settings.quiet:
+                print("ทิป: เปิดหน้าต่าง Chrome debug ทิ้งไว้ ครั้งหน้าจะได้ไม่ต้องล็อกอินใหม่", flush=True)
     except KeyboardInterrupt:
         print("\nยกเลิกการรอแล้ว")
     except LineError as e:

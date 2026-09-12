@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.1.0
 
 - Message backfill: `get_messages` scrolls the chat up until `limit` rows render (bounded by `LINE_EXT_MSG_MSGS_SCROLL_MS`, default 8s), stops early past `date_from`; `scroll=False` or `--no-scroll-msgs` restores on-screen-only reads
 - Backfill honesty fix: top-reached is read before scrolling (not after setting it), scroll moves one viewport per round with 1000ms settle, stops only after 5 steady rounds at the real top, prints progress and stop reason when not quiet
@@ -16,6 +16,7 @@
 - Direction probe: measure whether scrollTop goes negative (column-reverse world) before looping, scroll and stop at the correct older edge per direction, accept negative tops instead of reporting `detached`; box state now carries clientHeight too
 - Stride scrolling: each round covers half the remaining distance (1-4 viewports) instead of one fixed viewport, so a 13kpx box reaches its edge in ~5 rounds; the time budget is now a last-resort guard (need * 1000ms, 300s cap) and the loop runs until need/top/date stops it
 - Faster text reads: message `_text` timeout 3000ms down to 500ms
+- Login session note: the extension keeps its token in restart-scoped secure storage (verified: profile, storage.local, and IndexedDB all persist on disk, yet a relaunch still shows QR), so closing the debug window always means logging in again; README corrected (was: login once) and the CLI prints a keep-the-window-open tip after each fetch
 
 ## 1.0.0
 

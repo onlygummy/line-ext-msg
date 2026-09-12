@@ -1,6 +1,6 @@
 """line-ext-msg: pull messages from LINE Chrome Extension via Playwright CDP."""
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 from .client import LineClient
 from .messages import sender_stats
