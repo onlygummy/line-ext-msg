@@ -1,0 +1,23 @@
+"""02 - Export latest messages of one room to JSON.
+
+Run: uv run python examples/02_latest_messages.py --room "ครอบครัว" --limit 5
+"""
+import argparse
+
+from line_ext_msg import LineClient
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--room", required=True, help="Room name substring")
+    parser.add_argument("--limit", type=int, default=5)
+    args = parser.parse_args()
+
+    with LineClient() as line:
+        line.status()
+        out = line.save_messages(args.room, limit=args.limit)
+        print(f"บันทึก {out}")
+
+
+if __name__ == "__main__":
+    main()

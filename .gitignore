@@ -1,0 +1,17 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Generated debug/output files
+line_dom.html
+line_room.html
+rooms.json
+messages_*.json
+media/
