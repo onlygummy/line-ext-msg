@@ -104,6 +104,10 @@ def main():
                         help="ตรวจ Chrome + login แล้วจบ ไม่ต้องเลือกห้อง (เช็ก keepalive)")
     parser.add_argument("--probe-session", action="store_true",
                         help="บันทึก session/session_probe.json แบบ redact เพื่อดูว่า token อยู่ไหน")
+    parser.add_argument("--headless", dest="headless", action="store_true", default=None,
+                        help="รัน Chrome แบบไม่เปิดหน้าต่าง (default)")
+    parser.add_argument("--headed", dest="headed", action="store_true",
+                        help="เปิดหน้าต่าง Chrome ให้เห็น (เช่น ตอนสแกน QR)")
     args = parser.parse_args()
 
     wait_flag = None
@@ -119,6 +123,10 @@ def main():
         overrides["messages_scroll_ms"] = int(args.scroll_budget_s * 1000)
     if args.debug_scroll:
         overrides["debug_scroll"] = True
+    if args.headed:
+        overrides["headless"] = False
+    elif args.headless:
+        overrides["headless"] = True
     settings = Settings(**overrides) if overrides else None
 
     try:

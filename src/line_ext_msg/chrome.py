@@ -68,9 +68,13 @@ def start_chrome_debug(settings: Settings) -> None:
         raise ChromeNotReady("โปรไฟล์ Chrome ถูกใช้อยู่ ปิดหน้าต่าง debug เก่าก่อนแล้วรันใหม่")
     os.makedirs(data_dir, exist_ok=True)
     # Open LINE chats as the first tab so no New Tab lingers at index 0.
+    # Headless is the default: no window unless login needs a QR scan.
+    args = [exe, f"--remote-debugging-port={settings.port}", f"--user-data-dir={data_dir}"]
+    if settings.headless:
+        args.append("--headless=new")
+    args.append(settings.chats_url)
     subprocess.Popen(
-        [exe, f"--remote-debugging-port={settings.port}", f"--user-data-dir={data_dir}",
-         settings.chats_url],
+        args,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         creationflags=getattr(subprocess, "DETACHED_PROCESS", 0),
@@ -91,22 +95,59 @@ def port_hint(settings: Settings) -> str:
     )
 
 
-def ensure_chrome(settings: Settings) -> None:
-    """Ensure headed debug Chrome is running; start it if the port is closed.
+def terminate_debug_chrome(settings: Settings) -> None:
+    """Kill only Chrome processes of the isolated debug profile.
 
-    Detach-only lifecycle: callers must not kill Chrome on exit, otherwise
-    the restart-scoped LINE session is lost and QR login is needed again.
+    Needed to switch headless/headed (same user-data-dir cannot run both).
+    Never touches the user's normal Chrome (different profile, no match).
+    """
+    import subprocess as _sp
+
+    # wmic is gone on recent Windows: ask PowerShell (CIM) for PIDs instead.
+    ps = ("Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" "
+          "| Where-Object {$_.CommandLine -like '*line-chrome-debug*'} "
+          "| Select-Object -ExpandProperty ProcessId")
+    try:
+        out = _sp.run(
+            ["powershell", "-NoProfile", "-Command", ps],
+            capture_output=True, text=True, timeout=20,
+        ).stdout
+    except Exception:
+        return
+    for line in out.splitlines():
+        try:
+            pid = int(line.strip())
+        except (TypeError, ValueError):
+            continue
+        try:
+            _sp.run(["taskkill", "/F", "/PID", str(pid), "/T"],
+                    capture_output=True, timeout=15)
+        except Exception:
+            pass
+
+
+def ensure_chrome(settings: Settings) -> None:
+    """Ensure debug Chrome is running in the expected mode (headless default).
+
+    Detach-only lifecycle: callers must not kill Chrome on exit. Mode
+    switches (headless/headed) are explicit via terminate_debug_chrome.
     """
     from .errors import ChromeNotReady
 
     if is_debug_ready(settings):
-        if is_headless(settings):
-            raise ChromeNotReady(
-                "พอร์ต debug ถูกโปรแกรมอื่น (headless) ใช้อยู่ ไม่มีหน้าต่างให้เห็น "
-                "รัน: Get-Process chrome | Stop-Process -Force แล้วรันใหม่ "
-                f"({port_hint(settings)})"
-            )
-        return
+        want_headless = settings.headless
+        got_headless = is_headless(settings)
+        if want_headless == got_headless:
+            return
+        # Wrong mode on the port: restart in the expected mode.
+        terminate_debug_chrome(settings)
+        for _ in range(20):
+            if not is_debug_ready(settings):
+                break
+            try:
+                __import__("time").sleep(0.5)
+            except Exception:
+                break
     try:
         start_chrome_debug(settings)
     except ChromeNotReady as e:

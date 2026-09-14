@@ -59,6 +59,29 @@ class LineClient:
 
     # -- startup checklist (also serves MCP line_status) --------------
 
+    def _relaunch(self, headless: bool) -> None:
+        """Restart debug Chrome in the given mode and reattach.
+
+        Same profile/port, so the session survives (verified across kills).
+        """
+        import dataclasses
+
+        self.close()
+        _chrome.terminate_debug_chrome(self.settings)
+        self.settings = dataclasses.replace(self.settings, headless=headless)
+        _chrome.ensure_chrome(self.settings)
+        self._pw, self._browser, self._context = _session.connect(self.settings)
+        self._page = _session.ensure_line_page(self._context, self.settings, self._browser)
+        _session.wait_ready(self._page, self.settings)
+
+    def _relaunch_headed(self) -> None:
+        """Pop a visible window for QR login only."""
+        self._relaunch(headless=False)
+
+    def _relaunch_headless(self) -> None:
+        """Return to quiet headless after login completes."""
+        self._relaunch(headless=True)
+
     def status(
         self,
         wait_for_login: bool | None = None,
@@ -119,6 +142,13 @@ class LineClient:
         should_wait = wait_for_login if wait_for_login is not None else not self.settings.quiet
         wait_ms = login_timeout_ms if login_timeout_ms is not None else self.settings.login_wait_ms
         if not logged_in and reason == "login" and should_wait and wait_ms > 0:
+            # Headless cannot show the QR: pop a headed window for login only.
+            switched = False
+            if self.settings.headless:
+                if not self.settings.quiet:
+                    print("เปิดหน้าต่าง Chrome เพื่อสแกน QR (headless แสดง QR ไม่ได้)...", flush=True)
+                self._relaunch_headed()
+                switched = True
             if not self.settings.quiet:
                 print("ยังไม่ล็อกอิน กรุณาล็อกอินในหน้าต่าง Chrome ที่เปิดไว้ โปรแกรมกำลังรอ...", flush=True)
                 print("กด Ctrl+C เพื่อยกเลิก", flush=True)
@@ -134,6 +164,11 @@ class LineClient:
 
             logged_in, reason = auth.wait_for_login(self._page, wait_ms, on_tick=_tick)
             if logged_in:
+                if switched and not self.settings.quiet:
+                    # Stay headed for the rest of this run: killing Chrome
+                    # right after QR login can drop the session before it
+                    # flushes to disk. Next headless run picks it up quietly.
+                    print("ล็อกอินสำเร็จ ครั้งหน้าจะกลับไปแบบ headless เอง", flush=True)
                 record("ล็อกอินแล้ว", True, detail="ล็อกอินสำเร็จระหว่างรอ")
                 return results
         detail = "โครงหน้าเว็บไม่ตรง selector ที่รู้จัก" if reason == "unknown" and not logged_in else ""

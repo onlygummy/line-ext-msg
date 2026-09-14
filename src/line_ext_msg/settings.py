@@ -33,6 +33,9 @@ class Settings:
     rooms_scroll_ms: int = field(default_factory=lambda: _env_int("LINE_EXT_MSG_ROOMS_SCROLL_MS", 4000))
     messages_scroll_ms: int = field(default_factory=lambda: _env_int("LINE_EXT_MSG_MSGS_SCROLL_MS", 8000))
     open_room_wait_ms: int = field(default_factory=lambda: _env_int("LINE_EXT_MSG_OPEN_MS", 3000))
+    headless: bool = field(
+        default_factory=lambda: _env("LINE_EXT_MSG_HEADLESS", "1").lower() in ("1", "true", "yes")
+    )
     quiet: bool = field(
         default_factory=lambda: _env("LINE_EXT_MSG_QUIET", "").lower() in ("1", "true", "yes")
     )
