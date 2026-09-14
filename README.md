@@ -14,14 +14,17 @@ pip install line-ext-msg
 
 ```powershell
 line-ext-msg                       # เลือกห้องใน Terminal → พิมพ์จออย่างเดียว ไม่สร้างไฟล์
-line-ext-msg --save                # + เขียน rooms.json + messages_{index}.json
+line-ext-msg --save                # + เขียน session/rooms.json + session/messages_{index}.json
 line-ext-msg --unread               # แสดงเฉพาะห้องที่ไม่อ่าน
 line-ext-msg --limit 10 --date 2026-09-12
 line-ext-msg --date-from 2026-09-01 --date-to 2026-09-12 --keyword "ใบแจ้งหนี้"
 line-ext-msg --search "ใบแจ้งหนี้"  # ค้นทุกห้อง สรุปห้องที่เจอ
+line-ext-msg --status              # ตรวจ Chrome + login แล้วจบ (เช็ก keepalive)
+line-ext-msg --probe-session       # เขียน session/session_probe.json แบบ redact
+line-ext-msg --clear-session       # ล้าง session LINE (ถามยืนยันก่อน)
 ```
 
-ครั้งแรก: โปรแกรมเปิด Chrome โปรไฟล์แยก `%LOCALAPPDATA%\line-chrome-debug` ให้เอง ติดตั้ง LINE + ล็อกอินในหน้าต่างนั้น (Chrome 136+ บล็อก `--remote-debugging-port` บนโปรไฟล์หลักโดยตรง จึงต้องใช้โปรไฟล์แยก) เปิดหน้าต่าง debug ทิ้งไว้ระหว่างรันแต่ละครั้ง ถ้าปิดหน้าต่าง LINE จะให้ล็อกอินใหม่เพราะ token ฝั่ง extension ไม่ข้ามการรีสตาร์ทเบราว์เซอร์
+ครั้งแรก: โปรแกรมเปิด Chrome โปรไฟล์แยก `%LOCALAPPDATA%\line-chrome-debug` ให้เอง ติดตั้ง LINE + ล็อกอินในหน้าต่างนั้น (Chrome 136+ บล็อก `--remote-debugging-port` บนโปรไฟล์หลักโดยตรง จึงต้องใช้โปรไฟล์แยก) ปกติรันแบบ headless ไม่เปิดหน้าต่าง จะเด้ง headed ขึ้นมาเฉพาะตอนต้องสแกน QR เท่านั้น (`--headed` บังคับเปิดหน้าต่าง, `--headless` บังคับเงียบ) session เก็บในโปรไฟล์แยกและรอดข้ามการปิดเปิด (พิสูจน์แล้วด้วยการฆ่าโปรเซสทิ้ง) ถ้าหลุดจริงค่อยสแกน QR ใหม่ ไฟล์ output ทั้งหมดอยู่ใน `session/` (git-ignored)
 
 ## หน้าตาไฟล์ JSON ที่ได้
 
@@ -42,7 +45,7 @@ line-ext-msg --search "ใบแจ้งหนี้"  # ค้นทุกห�
 
 - รายชื่อห้องกับข้อความในห้องเป็น virtualized list โปรแกรมเลื่อนโหลดเพิ่มให้เองแบบมีเพดานเวลา (`LINE_EXT_MSG_ROOMS_SCROLL_MS`, `LINE_EXT_MSG_MSGS_SCROLL_MS`) ปิดได้ด้วย `--no-scroll-msgs` หรือตั้งค่าเป็น 0
 - ได้เฉพาะที่ UI แสดง ไม่มี API สถานะอ่านรายข้อความ
-- session ล็อกอินผูกกับเบราว์เซอร์ที่เปิดอยู่ ปิดหน้าต่าง debug แล้วเปิดใหม่ต้องล็อกอินใหม่ วิธีใช้คือเปิดทิ้งไว้แล้วรันซ้ำ (โปรแกรมเกาะ instance เดิมให้เอง)
+- session เก็บในโปรไฟล์ debug และรอดข้ามการปิดเปิดทั่วไป ถ้าหมดอายุโปรแกรมจะเปิด headed ให้สแกน QR เอง ล้างเองได้ด้วย `--clear-session`
 - `from_me` เป็น heuristic (ไม่มี username = เราส่ง) ยังไม่ยืนยันด้วย dump ที่มีข้อความของตัวเอง
 
 ## dev
@@ -56,7 +59,7 @@ uv build
 ## ถ้าอ่านห้องไม่ได้ (LINE อัปเดต UI)
 
 ```powershell
-line-ext-msg --dump              # DOM หน้า chats → line_dom.html
-line-ext-msg --dump-room 0       # DOM ในห้อง → line_room.html
+line-ext-msg --dump              # DOM หน้า chats → session/dumps/line_dom.html
+line-ext-msg --dump-room 0       # DOM ในห้อง → session/dumps/line_room.html
 # ส่งไฟล์มาเพื่อจูน selector ใน src/line_ext_msg/settings.py
 ```

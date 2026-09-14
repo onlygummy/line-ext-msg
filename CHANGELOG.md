@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.0
+
+- Headless by default: Chrome runs with `--headless=new` (`LINE_EXT_MSG_HEADLESS=1`); `--headed` forces a visible window, `--headless` forces quiet mode
+- Headed fallback for QR: when the login screen shows and waiting is allowed, the client pops a headed window for the scan only and stays headed for that run (no kill-before-flush); the next run returns to headless quietly
+- Session probe: `probe_session`/`save_probe` report redacted storage (key names with type and length only, never secrets) plus CDP targets; CLI `--probe-session` writes `session/session_probe.json`, `--status` checks keepalive without picking a room
+- Session findings: the login token persists on disk (`lcs_secure` in Local Storage survives full kills), so closing debug Chrome no longer always means re-login; `--clear-session` (with confirm, `--yes` to skip) wipes only extension storage and keeps the install, backing up a probe first
+- Startup tabs: Chrome opens straight at `#/chats` and startup noise (`chrome://newtab`, welcome, blank) is closed via CDP, so LINE stays tab 1
+- Outputs under `session/`: probes, `rooms.json`, `messages_*.json`, `media/`, and `dumps/` all live under `session/` (auto-created, git-ignored); `storage.save_json` creates parent dirs
+- Port conflicts: CDP squatter hint (`netstat -ano | findstr <port>`, `LINE_EXT_MSG_PORT`) attached to `ChromeNotReady`; mode mismatches restart in the expected mode instead of failing
+- Windows console fix: checklist uses ASCII `-` prefix (cp874 has no box-drawing glyph)
+
 ## 1.1.0
 
 - Message backfill: `get_messages` scrolls the chat up until `limit` rows render (bounded by `LINE_EXT_MSG_MSGS_SCROLL_MS`, default 8s), stops early past `date_from`; `scroll=False` or `--no-scroll-msgs` restores on-screen-only reads
