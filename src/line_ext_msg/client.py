@@ -48,6 +48,7 @@ class LineClient:
         self.close()
 
     def close(self) -> None:
+        """Detach CDP only; the debug Chrome stays open to keep the session."""
         if self._pw is not None:
             try:
                 self._pw.stop()
@@ -251,8 +252,10 @@ class LineClient:
 
     # -- debugging helpers --------------------------------------------
 
-    def dump_page(self, path: str = "line_dom.html") -> str:
+    def dump_page(self, path: str = "session/dumps/line_dom.html") -> str:
         """Save current chats DOM for selector tuning. No login required."""
+        import os
+
         from . import chrome as _c
 
         _c.ensure_chrome(self.settings)
@@ -261,21 +264,50 @@ class LineClient:
         assert self._context is not None
         page = _session.ensure_line_page(self._context, self.settings, self._browser)
         state = _session.wait_ready(page, self.settings)
+        if os.path.dirname(path):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             f.write(page.content())
         return state
 
-    def dump_room(self, ref: int | str | Room, path: str = "line_room.html") -> Room:
+    def dump_room(self, ref: int | str | Room, path: str = "session/dumps/line_room.html") -> Room:
         """Open a room then save its DOM for message-selector tuning."""
+        import os
+
         room = self.open_room(ref)
         assert self._page is not None
+        if os.path.dirname(path):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             f.write(self._page.content())
         return room
 
+    def probe_session(self) -> dict:
+        """Redacted storage probe: shows where the login token lives.
+
+        Key names with type and length only, never secret values.
+        Use the result to decide keepalive vs token-restore work.
+        """
+        from . import auth as _auth
+        from . import probe as _probe
+
+        page = self._ready_page()
+        logged_in, reason = _auth.check_login(page, self.settings.login_poll_ms)
+        data = _probe.probe_extension_storage(page)
+        data["logged_in"] = logged_in
+        data["login_reason"] = reason
+        data["targets"] = _probe.list_line_targets(self.settings)
+        return data
+
+    def save_probe(self, path: str = "session/session_probe.json") -> str:
+        """Run probe_session and save JSON. The only probe method that writes."""
+        data = self.probe_session()
+        _storage.save_json(path, data)
+        return path
+
     def save_rooms(
         self,
-        path: str = "rooms.json",
+        path: str = "session/rooms.json",
         unread_only: bool = False,
         query: str | None = None,
     ) -> str:
@@ -310,7 +342,7 @@ class LineClient:
             media_dir=media_dir, include_media_data=include_media_data,
             scroll=scroll,
         )
-        out = path or f"messages_{room.index}.json"
+        out = path or f"session/messages_{room.index}.json"
         _storage.save_json(out, {
             "room": asdict(room),
             "fetched_at": datetime.now(timezone.utc).isoformat(),

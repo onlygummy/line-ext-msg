@@ -67,8 +67,10 @@ def start_chrome_debug(settings: Settings) -> None:
     if _is_profile_locked(data_dir):
         raise ChromeNotReady("โปรไฟล์ Chrome ถูกใช้อยู่ ปิดหน้าต่าง debug เก่าก่อนแล้วรันใหม่")
     os.makedirs(data_dir, exist_ok=True)
+    # Open LINE chats as the first tab so no New Tab lingers at index 0.
     subprocess.Popen(
-        [exe, f"--remote-debugging-port={settings.port}", f"--user-data-dir={data_dir}"],
+        [exe, f"--remote-debugging-port={settings.port}", f"--user-data-dir={data_dir}",
+         settings.chats_url],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         creationflags=getattr(subprocess, "DETACHED_PROCESS", 0),
@@ -80,15 +82,33 @@ def start_chrome_debug(settings: Settings) -> None:
     raise ChromeNotReady("เปิด Chrome แล้วแต่พอร์ต debug ไม่ตอบใน 15 วิ")
 
 
+def port_hint(settings: Settings) -> str:
+    """One-line hint for CDP port conflicts (pure, no side effects)."""
+    return (
+        f"พอร์ต {settings.port} ถูกใช้อยู่ ตรวจด้วย: "
+        f"netstat -ano | findstr {settings.port} "
+        "หรือย้ายพอร์ตด้วย LINE_EXT_MSG_PORT"
+    )
+
+
 def ensure_chrome(settings: Settings) -> None:
-    """Ensure headed debug Chrome is running; start it if the port is closed."""
+    """Ensure headed debug Chrome is running; start it if the port is closed.
+
+    Detach-only lifecycle: callers must not kill Chrome on exit, otherwise
+    the restart-scoped LINE session is lost and QR login is needed again.
+    """
     from .errors import ChromeNotReady
 
     if is_debug_ready(settings):
         if is_headless(settings):
             raise ChromeNotReady(
                 "พอร์ต debug ถูกโปรแกรมอื่น (headless) ใช้อยู่ ไม่มีหน้าต่างให้เห็น "
-                "รัน: Get-Process chrome | Stop-Process -Force แล้วรันใหม่"
+                "รัน: Get-Process chrome | Stop-Process -Force แล้วรันใหม่ "
+                f"({port_hint(settings)})"
             )
         return
-    start_chrome_debug(settings)
+    try:
+        start_chrome_debug(settings)
+    except ChromeNotReady as e:
+        # Attach the port hint so a squatter port is actionable at once.
+        raise ChromeNotReady(f"{e} ({port_hint(settings)})") from e

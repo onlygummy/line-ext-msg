@@ -84,10 +84,10 @@ def main():
     parser.add_argument("--search", default=None, metavar="KEYWORD",
                         help="ค้นทุกห้อง แล้วสรุปห้องที่เจอ")
     parser.add_argument("--unread", action="store_true", help="แสดงเฉพาะห้องที่ไม่อ่าน")
-    parser.add_argument("--save", action="store_true", help="เขียน rooms.json + messages ลงไฟล์ (default พิมพ์จออย่างเดียว)")
-    parser.add_argument("--dump", action="store_true", help="บันทึก DOM ดิบเพื่อจูน selector")
+    parser.add_argument("--save", action="store_true", help="เขียน session/rooms.json + session/messages ลงไฟล์ (default พิมพ์จออย่างเดียว)")
+    parser.add_argument("--dump", action="store_true", help="บันทึก DOM ดิบเพื่อจูน selector (session/dumps/)")
     parser.add_argument("--dump-room", type=int, default=None, metavar="INDEX",
-                        help="เปิดห้องลำดับ INDEX แล้วบันทึก DOM เพื่อจูน selector ข้อความ")
+                        help="เปิดห้องลำดับ INDEX แล้วบันทึก DOM เพื่อจูน selector ข้อความ (session/dumps/)")
     parser.add_argument("--wait-login", dest="wait_login", action="store_true", default=None,
                         help="รอหน้าล็อกอินจนกว่าจะล็อกอินเสร็จ (default ในโหมดคนใช้)")
     parser.add_argument("--no-wait-login", dest="no_wait_login", action="store_true",
@@ -100,6 +100,10 @@ def main():
                         help="งบเวลาเลื่อนโหลดสูงสุดเป็นวินาที (default 8)")
     parser.add_argument("--debug-scroll", dest="debug_scroll", action="store_true", default=None,
                         help="พิมพ์ telemetry การเลื่อนทีละรอบ")
+    parser.add_argument("--status", action="store_true",
+                        help="ตรวจ Chrome + login แล้วจบ ไม่ต้องเลือกห้อง (เช็ก keepalive)")
+    parser.add_argument("--probe-session", action="store_true",
+                        help="บันทึก session/session_probe.json แบบ redact เพื่อดูว่า token อยู่ไหน")
     args = parser.parse_args()
 
     wait_flag = None
@@ -121,16 +125,26 @@ def main():
         with LineClient(settings) as line:
             if args.dump:
                 state = line.dump_page()
-                print(f"บันทึก line_dom.html แล้ว (state={state}) ส่งไฟล์นี้มาเพื่อจูน selector")
+                print(f"บันทึก session/dumps/line_dom.html แล้ว (state={state}) ส่งไฟล์นี้มาเพื่อจูน selector")
                 return
             line.status(wait_for_login=wait_flag, login_timeout_ms=wait_ms)
+            if args.status:
+                print("Chrome + LINE พร้อม (keepalive โอเค ปิด CLI ได้โดยไม่ปิด Chrome)")
+                return
+            if args.probe_session:
+                out = line.save_probe()
+                data = line.probe_session()
+                print(f"บันทึก {out} แล้ว (redact ค่า เหลือแค่ชื่อคีย์)")
+                print(f"login={data.get('logged_in')} session_keys={len(data.get('session_keys', {}))} "
+                      f"local_keys={len(data.get('local_keys', {}))} targets={len(data.get('targets', []))}")
+                return
             if args.dump_room is not None:
                 room = line.dump_room(args.dump_room)
-                print(f"บันทึก line_room.html แล้ว (ห้อง {room.name}) ส่งไฟล์นี้มาเพื่อจูน selector ข้อความ")
+                print(f"บันทึก session/dumps/line_room.html แล้ว (ห้อง {room.name}) ส่งไฟล์นี้มาเพื่อจูน selector ข้อความ")
                 return
             rooms = line.list_rooms(unread_only=args.unread)
             if not rooms:
-                print("อ่านรายชื่อห้องไม่ได้ รัน --dump แล้วส่ง line_dom.html มา")
+                print("อ่านรายชื่อห้องไม่ได้ รัน --dump แล้วส่ง session/dumps/line_dom.html มา")
                 return
             if args.save:
                 path = line.save_rooms(unread_only=args.unread)
@@ -147,7 +161,7 @@ def main():
             limit = max(0, args.limit) if args.limit is not None else ask_limit()
             filt = dict(limit=limit, date=args.date, date_from=args.date_from,
                         date_to=args.date_to, time_from=args.time_from, time_to=args.time_to,
-                        sender=args.sender, keyword=args.keyword, media_dir="media",
+                        sender=args.sender, keyword=args.keyword, media_dir="session/media",
                         scroll=not args.no_scroll_msgs)
             if args.save:
                 out = line.save_messages(chosen, **filt)

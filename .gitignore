@@ -9,9 +9,13 @@ wheels/
 # Virtual environments
 .venv
 
-# Generated debug/output files
+# Generated debug/output files (all CLI outputs live under session/)
+session/
+# Legacy root outputs (kept for backward compat)
 line_dom.html
 line_room.html
 rooms.json
 messages_*.json
+session_probe.json
+session_probe_before.json
 media/

@@ -52,6 +52,36 @@ def find_line_page(target, extension_id: str) -> Page | None:
     return None
 
 
+def close_startup_tabs(settings: Settings) -> None:
+    """Close startup noise (newtab/welcome/blank) so LINE stays tab 1.
+
+    Only touches the isolated debug profile via CDP. Never closes LINE tabs.
+    """
+    prefixes = (
+        "chrome://newtab",
+        "chrome://welcome",
+        "chrome://new-tab-page",
+        "chrome-untrusted://new-tab-page",
+        "about:blank",
+    )
+    try:
+        with urllib.request.urlopen(f"{settings.cdp_endpoint}/json/list", timeout=3) as res:
+            targets = json.loads(res.read().decode("utf-8", errors="ignore"))
+    except Exception:
+        return
+    for t in targets:
+        if not isinstance(t, dict) or t.get("type") != "page":
+            continue
+        url = t.get("url") or ""
+        if settings.extension_id in url:
+            continue
+        if url.startswith(prefixes) and t.get("id"):
+            try:
+                urllib.request.urlopen(f"{settings.cdp_endpoint}/json/close/{t['id']}", timeout=3).read()
+            except Exception:
+                continue
+
+
 def close_duplicate_line_targets(settings: Settings) -> None:
     """Close extra LINE pages via CDP HTTP so repeats don't pile up."""
     try:
@@ -98,6 +128,7 @@ def goto_chats(page: Page, settings: Settings) -> None:
 def ensure_line_page(context: BrowserContext, settings: Settings, browser: Browser | None = None) -> Page:
     """Reuse the LINE tab (or open fresh, straight to #/chats). Left open for reuse."""
     close_duplicate_line_targets(settings)
+    close_startup_tabs(settings)
     page = find_line_page(browser if browser is not None else context, settings.extension_id)
     if page is not None:
         try:

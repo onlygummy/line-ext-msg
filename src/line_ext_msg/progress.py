@@ -15,7 +15,8 @@ class Steps:
     def detail(self, text: str) -> None:
         """Debug line under the current step."""
         if not self.quiet:
-            print(f"   └ {text}", flush=True)
+            # ASCII prefix: Windows cp874 console has no box-drawing glyph.
+            print(f"   - {text}", flush=True)
 
     def check(self, label: str, passed: bool, hint: str = "") -> bool:
         """Record one step; print hint line when failed."""
@@ -24,7 +25,7 @@ class Steps:
             status = "ผ่าน" if passed else "ไม่ผ่าน"
             print(f"[{self.done}/{self.total}] {label} ... {status}", flush=True)
             if not passed and hint:
-                print(f"   └ {hint}", flush=True)
+                print(f"   - {hint}", flush=True)
         return passed
 
     def skip_rest(self, reason: str = "") -> None:
