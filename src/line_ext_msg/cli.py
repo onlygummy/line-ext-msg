@@ -108,6 +108,10 @@ def main():
                         help="รัน Chrome แบบไม่เปิดหน้าต่าง (default)")
     parser.add_argument("--headed", dest="headed", action="store_true",
                         help="เปิดหน้าต่าง Chrome ให้เห็น (เช่น ตอนสแกน QR)")
+    parser.add_argument("--clear-session", dest="clear_session", action="store_true",
+                        help="ล้าง session LINE ในโปรไฟล์ debug (เก็บ extension ไว้)")
+    parser.add_argument("--yes", action="store_true",
+                        help="ข้ามถามยืนยันสำหรับ --clear-session")
     args = parser.parse_args()
 
     wait_flag = None
@@ -131,6 +135,15 @@ def main():
 
     try:
         with LineClient(settings) as line:
+            if args.clear_session:
+                if not args.yes:
+                    raw = input("ล้าง session LINE ในโปรไฟล์ debug? พิมพ์ yes เพื่อยืนยัน > ").strip()
+                    if raw.lower() not in ("yes", "y"):
+                        print("ยกเลิกแล้ว ไม่ลบอะไร")
+                        return
+                summary = line.clear_session(backup=True)
+                print(f"ล้าง session แล้ว backup={summary.get('backup')} wiped={summary.get('wiped')}")
+                return
             if args.dump:
                 state = line.dump_page()
                 print(f"บันทึก session/dumps/line_dom.html แล้ว (state={state}) ส่งไฟล์นี้มาเพื่อจูน selector")

@@ -317,6 +317,34 @@ class LineClient:
             f.write(self._page.content())
         return room
 
+    def clear_session(self, backup: bool = True) -> dict:
+        """Wipe the LINE session only; extension install stays.
+
+        backup=True saves a redacted probe to session/ first. Stops debug
+        Chrome before the on-disk wipe, so the next run pops headed QR.
+        """
+        from . import clear_session as _clear
+
+        summary: dict = {}
+        if backup:
+            try:
+                # Fail-fast probe: must not pop a headed QR window mid-wipe.
+                try:
+                    self.status(wait_for_login=False)
+                except Exception:
+                    pass
+                summary["backup"] = self.save_probe("session/session_probe_before_clear.json")
+            except Exception as e:
+                summary["backup_error"] = str(e)[:120]
+        try:
+            summary["live"] = _clear.clear_live(self._ready_page())
+        except Exception as e:
+            summary["live_error"] = str(e)[:120]
+        self.close()
+        _chrome.terminate_debug_chrome(self.settings)
+        summary["wiped"] = _clear.clear_on_disk(self.settings)
+        return summary
+
     def probe_session(self) -> dict:
         """Redacted storage probe: shows where the login token lives.
 
