@@ -8,7 +8,7 @@ Run: uv run python examples/03_mcp_style.py
 from dataclasses import asdict
 
 from line_ext_msg import LineClient
-from line_ext_msg.errors import LineError
+from line_ext_msg.domain.errors import LineError
 
 
 def get_messages(room_name: str, limit: int = 5) -> dict:

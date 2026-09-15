@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- Layered package: `config`, `domain`, `browser`, `scraper`, `output`, `service`. Imports flow one way with no cycles, and only `line_ext_msg/__init__.py` exposes the public API
+- Split the two god modules: `messages.py` (731 lines) became `scraper/{messages,scroll,extract,media}.py`, and `client.py` (417 lines) became `service/{client,readiness,diagnostics,maintenance}.py`
+- All `page.evaluate` snippets now live in `browser/js.py` and take a single args object; a test scans that module to keep the single-argument rule
+- Default output paths centralized in `config/paths.py`; `SESSION_DIR` moved there from storage
+- `SELECTORS` split out of `Settings` into `config/selectors.py`
+- OS-specific code (locate Chrome, force kill, expand, profile lock) isolated in `browser/process.py`
+- Smooth headless/headed switching: new `browser/mode.py` state machine (`current`, `converge`) that closes Chrome gracefully via CDP `Browser.close` before falling back to a force kill, and verifies the mode after start with one retry
+- Headless QR login: when a QR is needed the login canvas is captured from the headless page and shown in a small Tk dialog (`LINE QR`, 2x zoom, `--qr-zoom`/`LINE_EXT_MSG_QR_ZOOM` to change) that refreshes the QR itself. No Chrome window is popped, so the run stays headless throughout
+- The QR dialog has no buttons and no timeout: it waits until the QR is scanned or the window is closed with the X, which records a cancel and stops the wait
+- QR capture is more robust: it polls for a non-empty canvas data URI, then reloads the page once and retries before falling back to a headed window. Canvas lookup now tries the QR container, then the login page, then the largest square canvas on the page
+- `--debug-qr` (env `LINE_EXT_MSG_DEBUG_QR`) prints redacted login-page diagnostics (containers, canvas sizes, data length) when capture fails; `LINE_EXT_MSG_QR_READY_MS` tunes the wait (default 20s)
+- The dialog runs as a separate process (`service.qr_view`) driven by `session/qr.png` and `session/qr_status.json`, so Tkinter never shares a thread with the sync Playwright API. When the QR canvas cannot be captured the flow falls back to a headed window
+- Session reality: the token stays in Local Storage (`lcs_secure_<mid>`, about 3.2 KB) across restarts, but the key that decrypts it lives in the extension's sandboxed `ltsmSandbox.html`, which has no persistent storage, so a fresh Chrome always asks for the QR again. Startup therefore never restarts a live Chrome to match the preferred mode; a running instance is reused and stays logged in, so the QR is scanned once per Chrome lifetime
+- Accurate headless detection reads the full CDP version payload (User-Agent), not the Browser string only
+- Tooling: `py.typed`, ruff, mypy, and a windows-latest CI workflow. Shared test helpers live in `tests/helpers.py` with `tests/conftest.py`, and tests mirror the package layout
+
 ## 1.2.0
 
 - Headless by default: Chrome runs with `--headless=new` (`LINE_EXT_MSG_HEADLESS=1`); `--headed` forces a visible window, `--headless` forces quiet mode

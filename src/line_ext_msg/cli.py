@@ -1,10 +1,11 @@
 """Thin CLI over LineClient: parse args, print results."""
 import argparse
 
-from .client import LineClient
-from .errors import LineError
-from .models import Room
-from .settings import Settings
+from .config import paths
+from .config.settings import Settings
+from .domain.errors import LineError
+from .domain.models import Room
+from .service.client import LineClient
 
 
 def _oneline(text: str) -> str:
@@ -93,7 +94,7 @@ def main():
     parser.add_argument("--no-wait-login", dest="no_wait_login", action="store_true",
                         help="เจอหน้าล็อกอินแล้วจบเลย ไม่รอ")
     parser.add_argument("--login-timeout-s", type=float, default=None, metavar="SEC",
-                        help="เวลารอสูงสุดเป็นวินาที (default 300)")
+                        help="เวลารอสูงสุดของเส้นทาง headed fallback (default 300) ไม่มีผลกับ dialog QR ที่รอจนปิดหน้าต่าง")
     parser.add_argument("--no-scroll-msgs", dest="no_scroll_msgs", action="store_true",
                         help="อ่านแค่ข้อความบนจอ ไม่เลื่อนย้อนหลัง")
     parser.add_argument("--scroll-budget-s", type=float, default=None, metavar="SEC",
@@ -107,7 +108,11 @@ def main():
     parser.add_argument("--headless", dest="headless", action="store_true", default=None,
                         help="รัน Chrome แบบไม่เปิดหน้าต่าง (default)")
     parser.add_argument("--headed", dest="headed", action="store_true",
-                        help="เปิดหน้าต่าง Chrome ให้เห็น (เช่น ตอนสแกน QR)")
+                        help="เริ่ม Chrome แบบเปิดหน้าต่าง (ใช้ตอนต้องสแกน QR)")
+    parser.add_argument("--qr-zoom", dest="qr_zoom", type=int, default=None, metavar="N",
+                        help="ขยาย QR ใน dialog N เท่า (default 2, ช่วง 1-4)")
+    parser.add_argument("--debug-qr", dest="debug_qr", action="store_true", default=None,
+                        help="พิมพ์สภาพหน้า login ตอนแคป QR ไม่ได้ (ไม่มีความลับ)")
     parser.add_argument("--clear-session", dest="clear_session", action="store_true",
                         help="ล้าง session LINE ในโปรไฟล์ debug (เก็บ extension ไว้)")
     parser.add_argument("--yes", action="store_true",
@@ -131,6 +136,10 @@ def main():
         overrides["headless"] = False
     elif args.headless:
         overrides["headless"] = True
+    if args.qr_zoom is not None:
+        overrides["qr_zoom"] = args.qr_zoom
+    if args.debug_qr:
+        overrides["debug_qr"] = True
     settings = Settings(**overrides) if overrides else None
 
     try:
@@ -182,7 +191,7 @@ def main():
             limit = max(0, args.limit) if args.limit is not None else ask_limit()
             filt = dict(limit=limit, date=args.date, date_from=args.date_from,
                         date_to=args.date_to, time_from=args.time_from, time_to=args.time_to,
-                        sender=args.sender, keyword=args.keyword, media_dir="session/media",
+                        sender=args.sender, keyword=args.keyword, media_dir=paths.MEDIA_DIR,
                         scroll=not args.no_scroll_msgs)
             if args.save:
                 out = line.save_messages(chosen, **filt)
