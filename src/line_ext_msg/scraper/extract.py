@@ -10,7 +10,7 @@ from playwright.sync_api import Page
 from ..browser import js
 from ..config.selectors import SELECTORS
 from ..domain.models import Message
-from .media import download_image
+from .media import fetch_image
 
 # System rows glue the clock to the text ("3:43 PMw.siri joined..."):
 # the row carries no dedicated sender element, so strip the prefix here.
@@ -83,14 +83,15 @@ def rendered_keys(page: Page) -> list[tuple[str, str]] | None:
 
 def extract_current(
     page: Page,
-    media_dir: str | None,
-    include_media_data: bool,
+    with_media: bool,
     skip_media_ids: set[str],
 ) -> list[Message]:
     """Full Message models for currently rendered rows, newest-first.
 
-    Image bubbles whose id is in skip_media_ids keep empty media fields
-    (already downloaded in an earlier round). Never raises: skips bad rows.
+    When with_media is True, image bubbles are fetched in memory as a data
+    URI in Message.media_data (no files). Bubbles whose id is in
+    skip_media_ids keep empty media fields (already fetched earlier).
+    Never raises: skips bad rows.
     """
     # Date separators and system rows interleave with messages in DOM order.
     nodes = page.locator(
@@ -147,9 +148,9 @@ def extract_current(
         # future dump shows a reliable marker, replace this check.
         from_me = not sender and kind in ("text", "image", "sticker")
         msg_id = _attr(node, "data-message-select-id") or f"{epoch}-{_attr(node, 'data-mid')}"
-        media, media_data = "", ""
-        if kind == "image" and (media_dir or include_media_data) and msg_id not in skip_media_ids:
-            media, media_data = download_image(page, node, media_dir, include_media_data, msg_id)
+        media_data = ""
+        if kind == "image" and with_media and msg_id not in skip_media_ids:
+            media_data = fetch_image(page, node)
         out.append(Message(
             id=msg_id,
             date=day or current_date,
@@ -159,7 +160,6 @@ def extract_current(
             type=kind,
             text=text,
             read_count=_read_count(node),
-            media=media,
             media_data=media_data,
         ))
 

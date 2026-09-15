@@ -1,12 +1,11 @@
-"""Session storage probe: find where the LINE login token lives.
+"""Diagnostics: read the DOM and probe session storage.
 
-Read-only spike for the restart-scoped session question. Never returns
-secret values, only key names with type and length, so the output file is
-safe to share when tuning persistence.
+Everything here returns values only. Callers save the DOM through the
+``Dom`` result and the probe through the ``Probe`` result. The probe never
+returns secret values, only key names with type and length.
 """
 
 import json
-import os
 import urllib.request
 
 from playwright.sync_api import Page
@@ -14,7 +13,6 @@ from playwright.sync_api import Page
 from ..browser import auth, js, session
 from ..config.settings import Settings
 from ..domain.models import Room
-from ..output import storage
 
 
 def summarize_dict(data) -> dict:
@@ -115,17 +113,8 @@ def list_line_targets(settings: Settings) -> list:
     return out
 
 
-def _write(path: str, content: str) -> None:
-    """Write text, creating the parent directory when needed."""
-    parent = os.path.dirname(path)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(content)
-
-
-def dump_page(client, path: str) -> str:
-    """Save the current chats DOM for selector tuning. No login required."""
+def read_page(client) -> tuple[str, str]:
+    """Return (state, html) of the chats DOM for selector tuning. No login required."""
     from ..browser import chrome as _chrome
 
     _chrome.ensure_chrome(client.settings)
@@ -133,15 +122,13 @@ def dump_page(client, path: str) -> str:
         client._pw, client._browser, client._context = session.connect(client.settings)
     page = session.ensure_line_page(client._context, client.settings, client._browser)
     state = session.wait_ready(page, client.settings)
-    _write(path, page.content())
-    return state
+    return state, page.content()
 
 
-def dump_room(client, ref, path: str) -> Room:
-    """Open a room then save its DOM for message-selector tuning."""
+def read_room(client, ref) -> tuple[Room, str]:
+    """Open a room and return (room, html) for message-selector tuning."""
     room = client.open_room(ref)
-    _write(path, client._page.content())
-    return room
+    return room, client._page.content()
 
 
 def probe_session(client) -> dict:
@@ -157,9 +144,3 @@ def probe_session(client) -> dict:
     data["login_reason"] = reason
     data["targets"] = list_line_targets(client.settings)
     return data
-
-
-def save_probe(client, path: str) -> str:
-    """Run probe_session and save JSON. The only probe function that writes."""
-    storage.save_json(path, probe_session(client))
-    return path

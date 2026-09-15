@@ -15,8 +15,9 @@ def main() -> None:
 
     with LineClient() as line:
         line.status()
-        out = line.save_messages(args.room, limit=args.limit)
-        print(f"Saved {out}")
+        msgs = line.get_messages(args.room, limit=args.limit, with_media=True)
+        msgs = msgs.download_media("session/media")
+        print(f"Saved {msgs.save('session/messages.json')}")
 
 
 if __name__ == "__main__":

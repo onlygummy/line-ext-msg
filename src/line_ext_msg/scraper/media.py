@@ -1,11 +1,14 @@
-"""Image bubble download: fetch blob URLs in-page, save files, build data URIs."""
+"""Image bubble fetch: read blob URLs inside the page as data URIs.
+
+Fetching has to happen while the row is still rendered (the blob lives in
+the page), so this returns a data URI in memory and never writes files.
+``Messages.download_media`` writes the data URIs to disk later.
+"""
 
 from __future__ import annotations
 
 from ..browser import js
 from ..config.selectors import SELECTORS
-
-_MIME_EXT = {"image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp"}
 
 
 def to_data_uri(mime: str, b64: str) -> str:
@@ -26,34 +29,16 @@ def _fetch_blob(page, src: str) -> tuple[str, str]:
         return "", ""
 
 
-def download_image(
-    page,
-    row,
-    media_dir: str | None,
-    include_data: bool,
-    msg_id: str,
-) -> tuple[str, str]:
-    """Fetch one image bubble. Returns (local path, data URI); '' when skipped/failed."""
-    import base64
-    import os
-
-    if not media_dir and not include_data:
-        return "", ""
+def fetch_image(page, row) -> str:
+    """Data URI of one image bubble, '' when there is no blob image."""
     try:
         img = row.locator(SELECTORS["image"]).locator("img").first
         src = img.get_attribute("src") or ""
         if not src.startswith("blob:"):
-            return "", ""
+            return ""
         mime, data = _fetch_blob(page, src)
         if not data:
-            return "", ""
-        path = ""
-        if media_dir:
-            safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in msg_id)[:60]
-            os.makedirs(media_dir, exist_ok=True)
-            path = os.path.join(media_dir, f"{safe}.{_MIME_EXT.get(mime, 'bin')}")
-            with open(path, "wb") as f:
-                f.write(base64.b64decode(data))
-        return path, to_data_uri(mime, data) if include_data else ""
+            return ""
+        return to_data_uri(mime, data)
     except Exception:
-        return "", ""
+        return ""

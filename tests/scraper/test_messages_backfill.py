@@ -363,12 +363,14 @@ class _ImgNode(_Node):
         return super().get_attribute(name)
 
 
-def test_image_not_redownloaded_for_known_id(tmp_path):
+def test_image_fetched_once_then_written_by_download_media(tmp_path):
     base = 1789175000000
     page = _SlidingPage([[_ImgNode("img1", base)], [_ImgNode("img1", base)]])
-    media = str(tmp_path)
     out = messages.get_messages(
-        cast(Page, page), _settings(), limit=5, scroll=True, media_dir=media)
+        cast(Page, page), _settings(), limit=5, scroll=True, with_media=True)
+    assert [m.id for m in out] == ["img1"]
+    assert out[0].media_data.startswith("data:image/png")  # in memory, no files yet
+    out = out.download_media(str(tmp_path))
     assert [m.id for m in out] == ["img1"]
     assert out[0].media.endswith(".png")
     assert page.fetches == 1

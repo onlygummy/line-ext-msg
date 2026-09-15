@@ -195,31 +195,30 @@ def main():
                 print(f"Session cleared: backup={summary.get('backup')} wiped={summary.get('wiped')}")
                 return
             if args.dump:
-                state = line.dump_page()
-                print(f"Saved {paths.PAGE_DUMP} (state={state}). Send this file to tune selectors.")
+                dom = line.dump_page()
+                print(f"Saved {dom.save(paths.PAGE_DUMP)} (state={dom.state}). Send this file to tune selectors.")
                 return
             line.status(wait_for_login=wait_flag, login_timeout_ms=wait_ms)
             if args.status:
                 print("Chrome + LINE ready (keepalive OK; closing the CLI keeps Chrome running)")
                 return
             if args.probe_session:
-                out = line.save_probe()
                 data = line.probe_session()
-                print(f"Saved {out} (redacted, key names only)")
+                print(f"Saved {data.save(paths.PROBE_JSON)} (redacted, key names only)")
                 print(f"login={data.get('logged_in')} session_keys={len(data.get('session_keys', {}))} "
                       f"local_keys={len(data.get('local_keys', {}))} targets={len(data.get('targets', []))}")
                 return
             if args.dump_room is not None:
-                room = line.dump_room(args.dump_room)
-                print(f"Saved {paths.ROOM_DUMP} (room {room.name}). Send this file to tune message selectors.")
+                dom = line.dump_room(args.dump_room)
+                room_name = dom.room.name if dom.room is not None else "?"
+                print(f"Saved {dom.save(paths.ROOM_DUMP)} (room {room_name}). Send this file to tune message selectors.")
                 return
             rooms = line.list_rooms(unread_only=args.unread)
             if not rooms:
                 print(f"Could not read the room list. Run --dump and send {paths.PAGE_DUMP}.")
                 return
             if args.save:
-                path = line.save_rooms(unread_only=args.unread)
-                print(f"Saved {path} ({len(rooms)} rooms)")
+                print(f"Saved {rooms.save(paths.ROOMS_JSON)} ({len(rooms)} rooms)")
             if args.search:
                 for hit in line.search_all(args.search,
                                            date_from=args.date_from or args.date,
@@ -232,17 +231,17 @@ def main():
             limit = max(0, args.limit) if args.limit is not None else ask_limit()
             filt = dict(limit=limit, date=args.date, date_from=args.date_from,
                         date_to=args.date_to, time_from=args.time_from, time_to=args.time_to,
-                        sender=args.sender, keyword=args.keyword, media_dir=paths.MEDIA_DIR,
-                        scroll=not args.no_scroll_msgs)
-            if args.save:
-                out = line.save_messages(chosen, **filt)
-                print(f"Saved {out}")
+                        sender=args.sender, keyword=args.keyword,
+                        with_media=True, scroll=not args.no_scroll_msgs)
             print(f"Opening room {chosen.name} ...", flush=True)
             msgs = line.get_messages(chosen, **filt)
             if not msgs:
                 print("Opened the room but could not read messages")
                 print(f"Run line-ext-msg --dump-room {chosen.index} and send {paths.ROOM_DUMP}")
                 return
+            msgs = msgs.download_media(paths.MEDIA_DIR)
+            if args.save:
+                print(f"Saved {msgs.save(paths.messages_json(chosen.index))}")
             for m in msgs:
                 print(f"[{m.date} {m.ts}] {_who(m.sender)}{_display(m)}")
             print("Tip: keep the debug Chrome window open to avoid logging in again", flush=True)

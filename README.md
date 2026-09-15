@@ -30,20 +30,32 @@ with LineClient(quiet=True) as line:
 | Method | Returns | Notes |
 |---|---|---|
 | `status(wait_for_login=None, login_timeout_ms=None)` | `list[StepResult]` | runs the 5 readiness checks; raises a typed `LineError` on the first failure |
-| `list_rooms(unread_only=False, query=None)` | `list[Room]` | `query` matches the room name substring |
+| `list_rooms(unread_only=False, query=None)` | `Rooms` | `list[Room]`; `query` matches the room name substring |
 | `open_room(ref)` | `Room` | `ref` is an index, a `data-mid`, a name substring, or a `Room` |
-| `get_messages(room=None, limit=5, ...)` | `list[Message]` | date/time, sender, and keyword filters; optional media download |
-| `unread_digest()` | `list[dict]` | rooms with `unread > 0`, as room dicts |
-| `unread_full(date=None, limit_per_room=20)` | `list[dict]` | unread rooms with their messages (`date=None` means today) |
-| `search_all(keyword, date_from=None, date_to=None, rooms=None, limit_per_room=100)` | `list[dict]` | every room that matched, one room at a time |
-| `save_rooms(path=..., unread_only=False, query=None)` | `str` | writes JSON, returns the path |
-| `save_messages(ref, path=None, ...)` | `str` | opens the room, writes JSON, returns the path |
-| `dump_page(path=...)`, `dump_room(ref, path=...)` | `str` / `Room` | save raw DOM for selector tuning |
-| `probe_session()`, `save_probe(path=...)` | `dict` / `str` | redacted storage probe (key names and lengths only) |
+| `get_messages(room=None, limit=5, ...)` | `Messages` | `list[Message]`; date/time, sender, and keyword filters |
+| `unread_digest()` | `Report` | rooms with `unread > 0`, as room dicts |
+| `unread_full(date=None, limit_per_room=20)` | `Report` | unread rooms with their messages (`date=None` means today) |
+| `search_all(keyword, date_from=None, date_to=None, rooms=None, limit_per_room=100)` | `Report` | every room that matched, one room at a time |
+| `dump_page()` | `Dom` | raw chats DOM for selector tuning |
+| `dump_room(ref)` | `Dom` | opens the room and returns its DOM |
+| `probe_session()` | `Probe` | redacted storage probe (key names and lengths only) |
 | `clear_session(backup=True)` | `dict` | wipes the LINE session, keeps the extension |
 | `close()` | `None` | detaches CDP; Chrome keeps running |
 
-`get_messages` also accepts `date`, `date_from`, `date_to`, `time_from`, `time_to`, `sender`, `keyword`, `media_dir`, `include_media_data`, and `scroll`.
+`get_messages` also accepts `date`, `date_from`, `date_to`, `time_from`, `time_to`, `sender`, `keyword`, `with_media`, and `scroll`.
+
+### Results and saving
+
+Queries never touch disk. They return a small result type that subclasses the plain builtin (`Rooms` and `Messages` are lists, `Report` is a list of dicts, `Probe` is a dict, `Dom` is a str) and adds `.save(path)`, which writes the file and returns the path. `Messages` also carries `.room` and a `.download_media(dir)` helper.
+
+```python
+rooms = line.list_rooms(unread_only=True)   # no I/O
+rooms.save("session/rooms.json")            # writes {"rooms": [...]}
+
+msgs = line.get_messages("Family", with_media=True)  # images in memory
+msgs = msgs.download_media("session/media")          # writes the image files
+msgs.save("session/messages.json")                   # writes room + fetched_at + messages
+```
 
 ## Recipes
 
@@ -64,19 +76,20 @@ Download image bubbles and embed them as data URIs (useful for AI pipelines):
 ```python
 with LineClient(quiet=True) as line:
     line.status()
-    msgs = line.get_messages("Family", limit=50, media_dir="media", include_media_data=True)
+    msgs = line.get_messages("Family", limit=50, with_media=True)
+    msgs = msgs.download_media("media", include_data=True)
     for m in msgs:
         if m.type == "image":
             print(m.media, len(m.media_data))  # local path and data URI
 ```
 
-Save results to JSON (`save_*` are the only methods with side effects on disk):
+Save results to JSON (`.save` is the only step with side effects on disk):
 
 ```python
 with LineClient(quiet=True) as line:
     line.status()
-    rooms_path = line.save_rooms(unread_only=True)
-    msgs_path = line.save_messages("Family", limit=100)
+    rooms_path = line.list_rooms(unread_only=True).save("session/rooms.json")
+    msgs_path = line.get_messages("Family", limit=100).save("session/messages.json")
     print(rooms_path, msgs_path)
 ```
 
@@ -129,7 +142,7 @@ Or attach your own handlers to the `line_ext_msg` logger. The CLI configures it 
 
 `StepResult` (frozen dataclass): `name`, `passed`, `detail`. Both models serialize with `dataclasses.asdict`.
 
-`save_messages` writes this shape:
+`Messages.save` writes this shape (room and `fetched_at` only when the result knows its room):
 
 ```json
 {
@@ -144,7 +157,7 @@ Or attach your own handlers to the `line_ext_msg` logger. The CLI configures it 
 }
 ```
 
-`unread_digest`, `unread_full`, and `search_all` return plain dicts (room dicts, and `{"room": ..., "messages": [...]}` for the latter two), not models.
+`unread_digest`, `unread_full`, and `search_all` return a `Report` (a list of dicts: room dicts, and `{"room": ..., "messages": [...]}` for the latter two), not models.
 
 ## Settings
 
@@ -193,7 +206,8 @@ On first run the CLI starts Chrome on the isolated profile. If the LINE extensio
 
 - Room and message lists are virtualized; the library scrolls to load more within a time budget. Disable with `scroll=False` or set the scroll budget to 0.
 - Only what the UI renders is readable; there is no per-message read API.
-- `unread_digest`, `unread_full`, and `search_all` return dicts, not models.
+- `unread_digest`, `unread_full`, and `search_all` return a `Report` (list of dicts), not models.
+- `download_media` only writes what `with_media=True` already fetched; it does not re-open the room.
 - The QR dialog is the only login UI; there is no callback for an app to render the QR itself.
 - The session is tied to the running Chrome process, so keep Chrome alive to avoid scanning again.
 - `from_me` is a heuristic (no username means your own message) and is not yet confirmed with a dump that contains your own messages.
@@ -209,12 +223,13 @@ src/line_ext_msg/
   domain/    models, typed errors, pure filters (no browser)
   browser/   everything that touches Chrome/Playwright: process, CDP, login, mode, JS
   scraper/   DOM to models: scroll, extract, media, rooms, messages
-  output/    JSON storage, checklist logger, logging setup
+  output/    JSON and text storage, checklist logger, logging setup
+  results.py savable query results: Rooms, Messages, Report, Probe, Dom
   service/   LineClient facade, readiness, diagnostics, QR dialog
   cli.py     entry point
 ```
 
-The public API is only `line_ext_msg/__init__.py` (`LineClient`, `Room`, `Message`, `StepResult`, `Settings`, `sender_stats`, and the typed errors). Subpackages are implementation details and may change without notice.
+The public API is only `line_ext_msg/__init__.py` (`LineClient`, `Room`, `Message`, `StepResult`, `Rooms`, `Messages`, `Report`, `Probe`, `Dom`, `Settings`, `sender_stats`, and the typed errors). Subpackages are implementation details and may change without notice.
 
 ## Development
 

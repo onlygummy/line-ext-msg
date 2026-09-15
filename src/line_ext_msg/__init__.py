@@ -29,6 +29,7 @@ from .domain.errors import (
 )
 from .domain.filters import sender_stats
 from .domain.models import Message, Room, StepResult
+from .results import Dom, Messages, Probe, Report, Rooms
 from .service.client import LineClient
 
 __version__ = "1.2.0"
@@ -44,6 +45,11 @@ __all__ = [
     "Room",
     "Message",
     "StepResult",
+    "Rooms",
+    "Messages",
+    "Report",
+    "Probe",
+    "Dom",
     "Settings",
     "LineError",
     "ChromeNotReady",

@@ -1,4 +1,4 @@
-"""get_messages: orchestrate scroll + extraction into a filtered list."""
+"""get_messages: orchestrate scroll + extraction into a Messages result."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from ..config.selectors import SELECTORS
 from ..config.settings import Settings
 from ..domain.filters import apply_filters
 from ..domain.models import Message
+from ..results import Messages
 from . import scroll as _scroll
 from .extract import extract_current, rendered_keys
 
@@ -23,22 +24,23 @@ def get_messages(
     time_to: str | None = None,
     sender: str | None = None,
     keyword: str | None = None,
-    media_dir: str | None = None,
-    include_media_data: bool = False,
+    with_media: bool = False,
     scroll: bool = True,
-) -> list[Message]:
-    """Latest messages, newest-first, with dates and ids.
+) -> Messages:
+    """Latest messages, newest-first, as a Messages result.
 
     Tracks day separators while walking the DOM so each message gets a
     real date. The chat list is virtualized in both directions, so rows
     are accumulated into a SeenMap every scroll round (bounded by
     settings.messages_scroll_ms); rows unloaded mid-scroll stay in the
-    result. Never raises on missing selectors: returns [] instead.
+    result. with_media fetches image bubbles in memory (data URI); call
+    Messages.download_media to write files. Never raises on missing
+    selectors: returns an empty Messages instead.
     """
     try:
         page.wait_for_selector(SELECTORS["message_list"], timeout=settings.selector_ms)
     except Exception:
-        return []
+        return Messages()
 
     seen: dict[str, Message] = {}
     last_sig: list[tuple[str, str]] | None = None
@@ -53,7 +55,7 @@ def get_messages(
         if sig is None or sig != last_sig:
             last_sig = sig
             try:
-                rows = extract_current(page, media_dir, include_media_data, set(seen))
+                rows = extract_current(page, with_media, set(seen))
             except Exception:
                 return len(seen)
             for m in rows:
@@ -75,7 +77,7 @@ def get_messages(
                         sender=sender, keyword=keyword)
     # DOM order is newest-first (verified in room dumps), so the latest
     # messages are at the head, not the tail.
-    return out[:limit] if limit else out
+    return Messages(out[:limit] if limit else out)
 
 
 __all__ = ["get_messages"]
