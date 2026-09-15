@@ -35,4 +35,4 @@ class RoomNotFound(LineError):
     def __init__(self, ref: object, available: list[str]):
         self.ref = ref
         self.available = available
-        super().__init__(f"ไม่เจอห้อง '{ref}' (มี: {', '.join(available) or '—'})")
+        super().__init__(f"Room '{ref}' not found (available: {', '.join(available) or '-'})")

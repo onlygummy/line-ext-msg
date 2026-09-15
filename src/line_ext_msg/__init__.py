@@ -14,7 +14,7 @@ Only this module exposes the public API; subpackages are implementation
 details and may change without notice.
 """
 
-__version__ = "1.2.0"
+import logging as _logging
 
 from .config.settings import Settings
 from .domain.errors import (
@@ -30,6 +30,12 @@ from .domain.errors import (
 from .domain.filters import sender_stats
 from .domain.models import Message, Room, StepResult
 from .service.client import LineClient
+
+__version__ = "1.2.0"
+
+# Library best practice: never emit or configure logging on import. Callers
+# (the CLI, or an embedding app) attach handlers via output.logging.configure.
+_logging.getLogger(__name__).addHandler(_logging.NullHandler())
 
 __all__ = [
     "__version__",

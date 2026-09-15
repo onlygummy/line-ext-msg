@@ -18,6 +18,7 @@
 - The dialog also shows the verification PIN: after the QR is scanned the extension opens a PIN modal (`pinCodeModal`), and the dialog displays that code so it can be typed into the phone. It switches back to the QR image when the flow returns to it
 - Dialog redesign: a light card with the LINE header, a colored status pill, and a large spaced PIN. It re-centers on the primary screen whenever its content changes size, DPI awareness keeps text crisp, and the copy was trimmed to the essentials
 - Fix: the dialog no longer flashes the QR again while the PIN is being verified. It keeps showing the PIN and returns to the QR only when a genuinely new QR image appears, until login succeeds or the window is closed
+- English-only project with structured logging: every CLI, dialog, and error string is English, and progress goes through the `line_ext_msg` logger instead of prints. The CLI adds `--verbose`, `--quiet-log`, `--log-level`, and `--log-file`; results stay on stdout and logs go to stderr. README and CHANGELOG translated to English
 - Session reality: the token stays in Local Storage (`lcs_secure_<mid>`, about 3.2 KB) across restarts, but the key that decrypts it lives in the extension's sandboxed `ltsmSandbox.html`, which has no persistent storage, so a fresh Chrome always asks for the QR again. Startup therefore never restarts a live Chrome to match the preferred mode; a running instance is reused and stays logged in, so the QR is scanned once per Chrome lifetime
 - Accurate headless detection reads the full CDP version payload (User-Agent), not the Browser string only
 - Tooling: `py.typed`, ruff, mypy, and a windows-latest CI workflow. Shared test helpers live in `tests/helpers.py` with `tests/conftest.py`, and tests mirror the package layout
@@ -57,7 +58,7 @@ First stable release: OOP facade, extended schema, filters, search, media.
 
 - `Message.media_data`: opt-in data URI (`include_media_data=True`) for MCP/AI image analysis
 - Download image bubbles to `media/` via in-page blob fetch; `Message.media` holds the path
-- CLI shows `[รูปภาพ: path]` / `[สติกเกอร์]` instead of blank lines
+- CLI shows `[image: path]` / `[sticker]` instead of blank lines
 
 - Filters: `date_from/date_to`, `time_from/time_to` (`HH:MM`), `sender`, `keyword` in `get_messages`/`save_messages`/CLI
 - `search_all()` keyword search grouped per room, `unread_full()` unread rooms + today's messages

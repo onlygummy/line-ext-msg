@@ -8,6 +8,7 @@ get the scroll direction wrong.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 from playwright.sync_api import Page
@@ -15,6 +16,8 @@ from playwright.sync_api import Page
 from ..browser import js
 from ..config.selectors import SELECTORS
 from ..config.settings import Settings
+
+logger = logging.getLogger(__name__)
 
 
 def msg_count(page: Page) -> int:
@@ -218,9 +221,7 @@ def scroll_to_fill(
         return "detached"
     prev_date = _scroll_date(page)
     direction = _probe_scroll_dir(page)
-    if not settings.quiet:
-        print(f"  ... กล่อง scroll: {_scroll_box_info(page)} ทิศ={direction}",
-              flush=True)
+    logger.info("scroll box: %s direction=%s", _scroll_box_info(page), direction)
     while waited < budget:
         if need and have_now >= need:
             reason = "need"
@@ -277,15 +278,16 @@ def scroll_to_fill(
             rounds += 1
             continue
         have_now = have()
-        if not settings.quiet and waited - last_log >= 2000:
+        if waited - last_log >= 2000:
             last_log = waited
             want = f"/{need}" if need else ""
-            print(f"  ... เลื่อนโหลดเพิ่ม ({have_now}{want})", flush=True)
+            logger.info("loaded more (%s%s)", have_now, want)
         if settings.debug_scroll:
-            print(f"  ... [dbg r{rounds} top {top_before}->{top_after}"
-                  f" h {prev_height}->{height_after} n {count}->{now}"
-                  f" have {have_now} date {prev_date}->{_scroll_date(page)}]",
-                  flush=True)
+            logger.debug(
+                "r%d top %s->%s h %s->%s n %s->%s have %s date %s->%s",
+                rounds, top_before, top_after, prev_height, height_after,
+                count, now, have_now, prev_date, _scroll_date(page),
+            )
         moved = top_after != top_before
         if now == count and at_edge and height_after == prev_height:
             stable_top += 1
@@ -302,8 +304,7 @@ def scroll_to_fill(
         # wheel-only loader would sleep: poke it with a real wheel event.
         if stuck >= 2 and wheel_tries < 3:
             wheel_tries += 1
-            if not settings.quiet:
-                print(f"  ... ลองหมุน wheel (ครั้งที่ {wheel_tries})", flush=True)
+            logger.info("wheel attempt %d", wheel_tries)
             if _wheel_up(page):
                 stuck = 0
         scroll_day = _scroll_date(page)
@@ -312,8 +313,7 @@ def scroll_to_fill(
         prev_date = scroll_day
         prev_height = height_after
         count = now
-    if not settings.quiet and (waited or reason != "need"):
+    if waited or reason != "need":
         want = f"/{need}" if need else ""
-        print(f"  ... โหลดได้ {have_now}{want} (หยุดเพราะ: {reason}, {rounds} รอบ)",
-              flush=True)
+        logger.info("loaded %s%s (stop: %s, %d rounds)", have_now, want, reason, rounds)
     return reason

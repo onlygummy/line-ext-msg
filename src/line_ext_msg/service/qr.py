@@ -144,7 +144,7 @@ class QrDialog:
                 stderr=subprocess.DEVNULL,
             )
         except Exception as e:
-            raise QrDialogFailed(f"เปิด dialog QR ไม่ได้: {e}") from e
+            raise QrDialogFailed(f"could not open the QR dialog: {e}") from e
 
     def finish(self, state: str = "cancel", keep_png: bool = False) -> None:
         """Signal the viewer to close, then clean up the shared files."""

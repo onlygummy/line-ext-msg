@@ -12,7 +12,7 @@ def main() -> None:
     with LineClient() as line:
         line.status()
         for room in line.list_rooms():
-            unread = f" ({room.unread} ไม่อ่าน)" if room.unread else ""
+            unread = f" ({room.unread} unread)" if room.unread else ""
             print(f"[{room.index}] {room.name}{unread}")
 
 

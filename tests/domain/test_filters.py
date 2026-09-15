@@ -8,13 +8,13 @@ from line_ext_msg.scraper.media import to_data_uri
 def _msgs():
     return [
         Message(id="1", date="2026-09-10", ts="2026-09-10T08:00:00",
-                sender="แม่", from_me=False, type="text", text="กินข้าวยัง"),
+                sender="Mom", from_me=False, type="text", text="have you eaten"),
         Message(id="2", date="2026-09-11", ts="2026-09-11T09:30:00",
-                sender="พ่อ", from_me=False, type="text", text="ใบแจ้งหนี้มาแล้ว"),
+                sender="Dad", from_me=False, type="text", text="invoice arrived"),
         Message(id="3", date="2026-09-12", ts="2026-09-12T18:00:00",
-                sender="", from_me=True, type="text", text="รับทราบครับ"),
+                sender="", from_me=True, type="text", text="noted"),
         Message(id="4", date="2026-09-12", ts="2026-09-12T19:00:00",
-                sender="แม่", from_me=False, type="sticker", text=""),
+                sender="Mom", from_me=False, type="sticker", text=""),
     ]
 
 
@@ -31,14 +31,14 @@ def test_time_range_skips_display_only():
 
 
 def test_sender_and_keyword():
-    assert [m.id for m in apply_filters(_msgs(), sender="แม่")] == ["1", "4"]
-    assert [m.id for m in apply_filters(_msgs(), keyword="ใบแจ้งหนี้")] == ["2"]
-    assert apply_filters(_msgs(), keyword="ไม่มีคำนี้") == []
+    assert [m.id for m in apply_filters(_msgs(), sender="Mom")] == ["1", "4"]
+    assert [m.id for m in apply_filters(_msgs(), keyword="invoice")] == ["2"]
+    assert apply_filters(_msgs(), keyword="nothing here") == []
 
 
 def test_sender_stats():
     stats = sender_stats(_msgs())
-    assert stats[0] == {"sender": "แม่", "count": 2}
+    assert stats[0] == {"sender": "Mom", "count": 2}
     assert sum(s["count"] for s in stats) == 4
 
 

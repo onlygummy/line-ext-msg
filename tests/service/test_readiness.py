@@ -307,7 +307,7 @@ def test_install_extension_cancel_when_chrome_closed(monkeypatch):
     client = _Client(_Page(), make_settings())
     installed, detail = readiness._install_extension(client, client.settings, "x")
     assert installed is False
-    assert "ยกเลิก" in detail
+    assert "cancelled" in detail
     assert calls == [False]  # headed only, never switched back
 
 

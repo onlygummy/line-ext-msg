@@ -2,6 +2,7 @@
 
 import glob
 import json
+import logging
 import os
 import urllib.request
 
@@ -10,6 +11,8 @@ from playwright.sync_api import Browser, BrowserContext, Page, sync_playwright
 from ..config.selectors import SELECTORS
 from ..config.settings import Settings
 from ..domain.errors import AttachFailed
+
+logger = logging.getLogger(__name__)
 
 
 def _debug_dir(settings: Settings) -> str:
@@ -31,8 +34,10 @@ def connect(settings: Settings):
         pw = sync_playwright().start()
         browser = pw.chromium.connect_over_cdp(settings.cdp_endpoint, timeout=15000)
     except Exception as e:
-        raise AttachFailed(f"เกาะเบราว์เซอร์ไม่สำเร็จ: {e}") from e
+        logger.error("CDP attach failed: %s", e)
+        raise AttachFailed(f"could not attach to the browser: {e}") from e
     context = browser.contexts[0] if browser.contexts else browser.new_context()
+    logger.info("attached over CDP (%d context(s))", len(browser.contexts))
     return pw, browser, context
 
 
@@ -169,8 +174,10 @@ def ensure_line_page(context: BrowserContext, settings: Settings, browser: Brows
         except Exception:
             pass
         goto_chats(page, settings)
+        logger.debug("reusing the existing LINE tab")
         return page
     page = context.new_page()
+    logger.debug("opening a new LINE tab")
     try:
         page.goto(settings.chats_url)
     except Exception:
@@ -197,14 +204,14 @@ def check_installed(context: BrowserContext, settings: Settings, browser: Browse
         try:
             body = existing.content()
             url = existing.url or ""
-            detail = f"reuse แท็บเดิม body_len={len(body)}"
+            detail = f"reused tab body_len={len(body)}"
             if url.startswith("chrome-error://"):
                 return False, detail
             if "LINE" in body or 'id="root"' in body or settings.extension_id in url:
                 return True, detail
             return found_disk, detail
         except Exception as e:
-            return found_disk, f"อ่านแท็บเดิมล้มเหลว: {e}"
+            return found_disk, f"could not read the reused tab: {e}"
     probe = context.new_page()
     try:
         probe.goto(settings.extension_url, timeout=10000)
@@ -219,7 +226,7 @@ def check_installed(context: BrowserContext, settings: Settings, browser: Browse
             return True, detail
         return found_disk, detail
     except Exception as e:
-        return found_disk, f"probe ล้มเหลว: {e} found_on_disk={found_disk}"
+        return found_disk, f"probe failed: {e} found_on_disk={found_disk}"
     finally:
         probe.close()
 
@@ -250,6 +257,7 @@ def wait_ready(page: Page, settings: Settings) -> str:
         page.wait_for_timeout(800)
     except Exception:
         pass
+    logger.debug("page ready")
     return "ready"
 
 

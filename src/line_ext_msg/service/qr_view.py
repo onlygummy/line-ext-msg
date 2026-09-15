@@ -97,7 +97,7 @@ class _Dialog:
 
         self.instruction = tk.Label(self.root, text="", bg=BG, fg=MUTED, font=(FONT, 11))
         self.instruction.pack(pady=(0, 4))
-        tk.Label(self.root, text="ปิดเพื่อยกเลิก", bg=BG, fg=GRAY, font=(FONT, 9)).pack(
+        tk.Label(self.root, text="Close to cancel", bg=BG, fg=GRAY, font=(FONT, 9)).pack(
             pady=(0, 16)
         )
 
@@ -133,18 +133,18 @@ class _Dialog:
 
     def _set_state(self, state: str, pin: str = "") -> None:
         if state == "pin":
-            self._pill("กรอกรหัส", AMBER)
-            self.instruction.configure(text="กรอกรหัสในแอป LINE")
+            self._pill("Enter code", AMBER)
+            self.instruction.configure(text="Enter this code in the LINE app")
             self._show_pin(pin)
         elif state == "done":
-            self._pill("สำเร็จ", GREEN)
+            self._pill("Done", GREEN)
             self.instruction.configure(text="")
         elif state == "cancel":
-            self._pill("ยกเลิก", GRAY)
+            self._pill("Cancelled", GRAY)
             self.instruction.configure(text="")
         else:
-            self._pill("รอสแกน", GREEN)
-            self.instruction.configure(text="สแกนด้วยแอป LINE")
+            self._pill("Waiting", GREEN)
+            self.instruction.configure(text="Scan with the LINE app")
             self._show_image()
         self._center()
 

@@ -1,8 +1,12 @@
 """Login check: distinguish 'not logged in' from 'selector mismatch'."""
 
+import logging
+
 from playwright.sync_api import Page
 
 from ..config.selectors import SELECTORS
+
+logger = logging.getLogger(__name__)
 
 # Fast login-screen locators (CSS-module hashes change, so match stable parts).
 LOGIN_LOCATORS = [
@@ -13,8 +17,7 @@ LOGIN_LOCATORS = [
 
 # Fallback text markers when locators miss (checked on small scope only).
 LOGIN_MARKERS = [
-    "qr code", "qr login", "email address",
-    "เข้าสู่ระบบ", "ล็อกอิน",
+    "qr code", "qr login", "email address", "log in", "sign in",
 ]
 
 
@@ -56,16 +59,21 @@ def check_login(page: Page, timeout_ms: int = 10000) -> tuple[bool, str]:
     # Fast path: wake the moment rooms render instead of sleeping blindly.
     try:
         page.wait_for_selector(SELECTORS["room_item"], state="attached", timeout=timeout_ms)
+        logger.info("login state: chat")
         return True, "chat"
     except Exception:
         pass
     if _has_chat_ui(page):
+        logger.info("login state: chat")
         return True, "chat"
     if _has_login_ui(page):
+        logger.info("login state: login")
         return False, "login"
     # Final text fallback on rendered body before giving up.
     if _body_has_login(page):
+        logger.info("login state: login (text marker)")
         return False, "login"
+    logger.warning("login state: unknown (no chat or login UI matched)")
     return False, "unknown"
 
 
@@ -90,6 +98,7 @@ def wait_for_login(
     polls = 0
     while elapsed < max(step, timeout_ms):
         if _has_chat_ui(page):
+            logger.info("logged in after %dms", elapsed)
             return True, "chat"
         if _has_login_ui(page):
             seen_login = True
@@ -106,11 +115,14 @@ def wait_for_login(
             page.wait_for_timeout(step)
         except Exception:
             # Page closed or detached mid-wait: treat as unknown.
+            logger.warning("page closed while waiting for login")
             return False, "unknown"
         elapsed += step
         polls += 1
     if _has_chat_ui(page):
         return True, "chat"
     if seen_login or _has_login_ui(page) or _body_has_login(page):
+        logger.warning("login not completed within %dms", timeout_ms)
         return False, "login"
+    logger.warning("login UI never matched within %dms", timeout_ms)
     return False, "unknown"

@@ -15,6 +15,7 @@ so the whole run stays headless.
 from __future__ import annotations
 
 import dataclasses
+import logging
 import time
 
 from ..browser import auth, chrome, js, mode, session
@@ -30,6 +31,8 @@ from ..domain.errors import (
 )
 from ..domain.models import StepResult
 from . import qr
+
+logger = logging.getLogger(__name__)
 
 TOTAL_STEPS = 5
 
@@ -57,8 +60,7 @@ def _ensure_headed(client) -> bool:
     """Pop a visible window when the QR canvas cannot be captured headlessly."""
     if mode.mode_of(client.settings) == mode.HEADED:
         return False
-    if not client.settings.quiet:
-        print("เปิดหน้าต่าง Chrome เพื่อสแกน QR...", flush=True)
+    logger.warning("falling back to a headed Chrome window to scan the QR")
     switch_mode(client, headless=False)
     return True
 
@@ -70,7 +72,8 @@ def _qr_data(page) -> str:
             js.QR_DATA_URL,
             {"sel": SELECTORS["login_qr"], "pageSel": SELECTORS["login_page"]},
         )
-    except Exception:
+    except Exception as e:
+        logger.debug("qr data read failed: %s", e)
         return ""
     return data if isinstance(data, str) else ""
 
@@ -113,8 +116,10 @@ def _wait_for_qr(page, timeout_ms: int) -> str:
     while True:
         uri = _qr_data(page)
         if uri:
+            logger.debug("qr captured (%d bytes of data URI)", len(uri))
             return uri
         if time.monotonic() >= deadline:
+            logger.warning("no QR canvas after %dms", timeout_ms)
             return ""
         try:
             page.wait_for_timeout(500)
@@ -139,18 +144,17 @@ def _qr_login(client) -> str:
         # The reused SPA may be stuck from an earlier run, so the login view
         # never mounts. A reload is safe here because we are not logged in.
         reloaded = True
+        logger.info("reloading the login page and retrying the QR capture")
         try:
             page.goto(settings.chats_url, timeout=10000)
             session.wait_ready(page, settings)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("reload failed: %s", e)
         data_uri = _wait_for_qr(page, settings.qr_ready_ms)
     if not data_uri:
         if settings.debug_qr:
-            print(f"  [qr] {_qr_debug(page)}", flush=True)
-        if not settings.quiet:
-            suffix = " (ลองโหลดหน้าใหม่แล้ว)" if reloaded else ""
-            print(f"แคป QR จากหน้า login ไม่ได้{suffix}", flush=True)
+            logger.info("qr diagnostics: %s", _qr_debug(page))
+        logger.warning("could not capture the QR (reloaded=%s)", reloaded)
         return "fallback"
 
     dialog = qr.QrDialog(zoom=settings.qr_zoom)
@@ -158,12 +162,10 @@ def _qr_login(client) -> str:
         dialog.open(data_uri)
     except QrDialogFailed as e:
         dialog.finish("cancel", keep_png=True)
-        if not client.settings.quiet:
-            print(f"{e} เปิดไฟล์เองได้ที่ {dialog.png}", flush=True)
+        logger.error("%s (open the file manually at %s)", e, dialog.png)
         raise
 
-    if not client.settings.quiet:
-        print("แสดง QR ในหน้าต่าง (ปิดเพื่อยกเลิก)", flush=True)
+    logger.info("QR shown in the dialog (close it to cancel)")
 
     logged = False
     shown = data_uri
@@ -174,9 +176,11 @@ def _qr_login(client) -> str:
                 logged = True
                 break
             if not dialog.alive():
+                logger.info("dialog closed by the user; cancelling login")
                 break
             pin, desc = _login_pin(page)
             if pin:
+                logger.info("PIN requested (len=%d)", len(pin))
                 dialog.set_pin(pin, desc)
             else:
                 # Keep the PIN visible while verification runs: only go back
@@ -184,6 +188,7 @@ def _qr_login(client) -> str:
                 # stale QR image flashes after the code is entered.
                 uri = _qr_data(page)
                 if uri and uri != shown:
+                    logger.info("new QR detected; refreshing the dialog")
                     dialog.show_qr(uri)
                     shown = uri
             try:
@@ -200,7 +205,7 @@ def _print_keep_open(client) -> None:
     """Tell the user why the Chrome process is left running after login."""
     if client.settings.quiet:
         return
-    print("ล็อกอินสำเร็จ (อย่าปิด Chrome ถ้าไม่อยากสแกนใหม่)", flush=True)
+    logger.info("logged in (leave Chrome running to avoid scanning again)")
 
 
 def _install_extension(client, settings: Settings, detail: str) -> tuple[bool, str]:
@@ -211,8 +216,7 @@ def _install_extension(client, settings: Settings, detail: str) -> tuple[bool, s
     fresh check result. Returns (installed, detail).
     """
     if mode.mode_of(settings) != mode.HEADED:
-        if not settings.quiet:
-            print("ไม่พบ Extension เปิดหน้าต่าง Chrome เพื่อติดตั้ง...", flush=True)
+        logger.warning("extension not found; opening a headed Chrome window to install")
         # Do not open the LINE page here: without the extension it is a
         # blocked tab that only clutters the window.
         switch_mode(client, headless=False, open_page=False)
@@ -221,20 +225,22 @@ def _install_extension(client, settings: Settings, detail: str) -> tuple[bool, s
     try:
         session.open_store_page(client._context, settings)
     except Exception as e:
-        if not settings.quiet:
-            print(f"เปิดหน้าเว็บสโตร์ไม่สำเร็จ: {e}", flush=True)
-    if not settings.quiet:
-        print("ติดตั้ง LINE จากเว็บสโตร์ (ปิดหน้าต่างเพื่อยกเลิก)", flush=True)
+        logger.warning("could not open the Web Store page: %s", e)
+    logger.info("install LINE from the Web Store (close the window to cancel)")
 
     # No timeout on purpose: stop by installing the extension, closing
     # Chrome, or pressing Ctrl+C.
+    polls = 0
     while not session.is_on_disk(settings):
         if not chrome.is_debug_ready(settings):
-            return False, "ยกเลิก: ปิดหน้าต่าง Chrome ก่อนติดตั้งเสร็จ"
+            logger.warning("Chrome closed before the install finished")
+            return False, "cancelled: Chrome window closed before install finished"
+        polls += 1
+        if polls % 10 == 0:
+            logger.debug("still waiting for the extension files")
         time.sleep(2)
 
-    if not settings.quiet:
-        print("ติดตั้งสำเร็จ กลับสู่โหมด headless...", flush=True)
+    logger.info("extension installed; returning to headless")
     switch_mode(client, headless=True)
     return session.check_installed(client._context, settings, client._browser)
 
@@ -244,12 +250,11 @@ def run(client, wait_for_login: bool | None = None,
     """Run the 5 readiness checks. Raises typed LineError on first failure."""
     settings: Settings = client.settings
     steps = client._steps
-    if not settings.quiet:
-        print("[0/5] เริ่มตรวจเงื่อนไข...", flush=True)
+    logger.info("[0/5] checking prerequisites")
     results: list[StepResult] = []
 
     def record(name: str, passed: bool, detail: str = "", hint: str = "") -> StepResult:
-        # Print the label first, then the detail, so the detail line sits
+        # Log the label first, then the detail, so the detail line sits
         # under the step it describes instead of the previous one.
         steps.check(name, passed, "" if passed else hint)
         if detail:
@@ -265,34 +270,34 @@ def run(client, wait_for_login: bool | None = None,
         if not chrome.is_debug_ready(settings):
             mode.converge(settings)
     except ChromeNotReady as e:
-        record("Chrome debug พร้อม", False, str(e))
-        steps.skip_rest("หยุดก่อน")
+        record("Chrome debug ready", False, str(e))
+        steps.skip_rest("stopped early")
         raise
-    record("Chrome debug พร้อม", True)
+    record("Chrome debug ready", True)
 
     try:
         client._pw, client._browser, client._context = session.connect(settings)
     except AttachFailed as e:
-        record("เกาะเบราว์เซอร์", False, str(e))
-        steps.skip_rest("หยุดก่อน")
+        record("Attached to browser", False, str(e))
+        steps.skip_rest("stopped early")
         raise
-    record("เกาะเบราว์เซอร์", True)
+    record("Attached to browser", True)
 
     installed, detail = session.check_installed(client._context, settings, client._browser)
     if not installed:
         installed, detail = _install_extension(client, settings, detail)
-    if not record("Extension ติดตั้ง", installed,
-                  detail=detail, hint=f"ติดตั้งเองจาก: {settings.webstore_url}").passed:
-        steps.skip_rest("รอติดตั้งก่อน")
-        raise ExtensionMissing(f"ติดตั้งเองจาก: {settings.webstore_url}")
+    if not record("Extension installed", installed,
+                  detail=detail, hint=f"install it here: {settings.webstore_url}").passed:
+        steps.skip_rest("waiting for install")
+        raise ExtensionMissing(f"install it here: {settings.webstore_url}")
 
     client._page = session.ensure_line_page(client._context, settings, client._browser)
     state = session.wait_ready(client._page, settings)
-    if not record("หน้า LINE พร้อม", state == "ready",
+    if not record("LINE page ready", state == "ready",
                   detail=f"state={state}",
-                  hint="แอปโหลดไม่เสร็จในเวลาที่กำหนด ลองรันใหม่").passed:
-        steps.skip_rest("หยุดก่อน")
-        raise AppNotReady("แอปโหลดไม่เสร็จในเวลาที่กำหนด ลองรันใหม่")
+                  hint="app did not finish loading in time, try again").passed:
+        steps.skip_rest("stopped early")
+        raise AppNotReady("app did not finish loading in time, try again")
 
     logged_in, reason = auth.check_login(client._page, settings.login_poll_ms)
     # Interactive CLI waits by default; quiet library use stays fail-fast.
@@ -303,32 +308,29 @@ def run(client, wait_for_login: bool | None = None,
 
     def _tick(elapsed_ms: int) -> None:
         # Throttle progress to one line per ~10s to avoid log spam.
-        if settings.quiet:
-            return
         if elapsed_ms - last_ping[0] >= 10000:
             last_ping[0] = elapsed_ms
-            print(f"  ... รอการล็อกอิน ({elapsed_ms // 1000} วิ)", flush=True)
+            logger.info("waiting for login (%ds)", elapsed_ms // 1000)
 
     if not logged_in and reason == "login" and should_wait and wait_ms > 0:
         outcome = _qr_login(client)
         if outcome == "fallback":
             _ensure_headed(client)
-            if not settings.quiet:
-                print("ล็อกอินในหน้าต่าง Chrome (Ctrl+C เพื่อยกเลิก)", flush=True)
+            logger.info("log in the Chrome window (Ctrl+C to cancel)")
             logged_in, reason = auth.wait_for_login(client._page, wait_ms, on_tick=_tick)
         elif outcome == "ok":
             logged_in, reason = True, "chat"
         else:
             logged_in, reason = False, "login"
         if logged_in:
-            record("ล็อกอินแล้ว", True, detail="ล็อกอินสำเร็จระหว่างรอ")
+            record("Logged in", True, detail="logged in while waiting")
             _print_keep_open(client)
             return results
 
-    detail = "โครงหน้าเว็บไม่ตรง selector ที่รู้จัก" if reason == "unknown" and not logged_in else ""
-    if not record("ล็อกอินแล้ว", logged_in,
+    detail = "page structure does not match known selectors" if reason == "unknown" and not logged_in else ""
+    if not record("Logged in", logged_in,
                   detail=detail,
-                  hint="เปิดแท็บ LINE ล็อกอินด้วย QR/อีเมลก่อน แล้วรันใหม่").passed:
-        steps.skip_rest("รอ login ก่อน")
-        raise LoginRequired("ยังไม่ล็อกอิน LINE")
+                  hint="open the LINE tab and log in with QR/email, then run again").passed:
+        steps.skip_rest("waiting for login")
+        raise LoginRequired("not logged in to LINE")
     return results

@@ -9,11 +9,14 @@ mode and verifies it, retrying once before giving up.
 
 from __future__ import annotations
 
+import logging
 import time
 
 from ..config.settings import Settings
 from ..domain.errors import ChromeNotReady
 from . import chrome, process
+
+logger = logging.getLogger(__name__)
 
 ABSENT = "absent"
 HEADLESS = "headless"
@@ -62,9 +65,11 @@ def stop(settings: Settings, browser=None, on_event=None,
         except Exception:
             graceful = False
     if graceful and wait(settings, graceful_timeout_s):
+        logger.info("Chrome closed gracefully")
         return "graceful"
     if on_event and browser is not None and not graceful:
-        on_event("ปิด Chrome แบบ graceful ไม่ได้ ใช้ force kill")
+        on_event("graceful close failed, using force kill")
+    logger.warning("force killing debug Chrome")
     process.terminate_debug_chrome(settings)
     wait(settings, 5.0)
     return "force"
@@ -83,9 +88,11 @@ def converge(settings: Settings, browser=None, *, probe=None, starter=None,
 
     current = probe(settings)
     if current == desired:
+        logger.debug("mode already %s", desired)
         return current
+    logger.info("switching Chrome mode: %s -> %s", current, desired)
     if on_event:
-        on_event(f"สลับ Chrome: {current} -> {desired}")
+        on_event(f"switching Chrome: {current} -> {desired}")
 
     last = current
     for _ in range(max(0, retries) + 1):
@@ -97,4 +104,5 @@ def converge(settings: Settings, browser=None, *, probe=None, starter=None,
         last = probe(settings)
         if last == desired:
             return last
-    raise ChromeNotReady(f"สลับโหมดไม่สำเร็จ: ต้องการ {desired} แต่ได้ {last}")
+    logger.error("mode switch failed: wanted %s, got %s", desired, last)
+    raise ChromeNotReady(f"mode switch failed: wanted {desired} but got {last}")

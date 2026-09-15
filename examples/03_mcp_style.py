@@ -37,4 +37,4 @@ def unread_digest() -> dict:
 if __name__ == "__main__":
     import json
 
-    print(json.dumps(get_messages("ครอบครัว"), ensure_ascii=False, indent=2))
+    print(json.dumps(get_messages("Family"), ensure_ascii=False, indent=2))

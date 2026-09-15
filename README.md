@@ -1,79 +1,87 @@
 # line-ext-msg
 
-ดึงข้อความ (เวลา + คนส่ง + ข้อความ + วันที่ + สถานะ) จาก LINE Chrome Extension ผ่าน Playwright แบบเกาะ Chrome ตัวจริง บัญชีของตัวเอง อ่านอย่างเดียว
+Pull messages (time + sender + text + date + read count) from the LINE Chrome Extension through Playwright. It attaches to your real Chrome and your own account, read-only.
 
-## ติดตั้ง
+## Install
 
 ```powershell
 pip install line-ext-msg
 ```
 
-ต้องมี Google Chrome ในเครื่อง ไม่ต้องรัน `playwright install` เพราะโปรแกรมเกาะ Chrome ที่มีอยู่ผ่าน CDP ไม่ได้ใช้ bundled chromium
+Google Chrome must be installed. You do not need `playwright install`: the tool attaches to the running Chrome over CDP and never uses the bundled chromium.
 
-## ใช้งาน CLI
+## CLI
 
 ```powershell
-line-ext-msg                       # เลือกห้องใน Terminal → พิมพ์จออย่างเดียว ไม่สร้างไฟล์
-line-ext-msg --save                # + เขียน session/rooms.json + session/messages_{index}.json
-line-ext-msg --unread               # แสดงเฉพาะห้องที่ไม่อ่าน
+line-ext-msg                       # pick a room in the terminal, print to screen only
+line-ext-msg --save                # also write session/rooms.json and session/messages_<index>.json
+line-ext-msg --unread              # only rooms with unread messages
 line-ext-msg --limit 10 --date 2026-09-12
-line-ext-msg --date-from 2026-09-01 --date-to 2026-09-12 --keyword "ใบแจ้งหนี้"
-line-ext-msg --search "ใบแจ้งหนี้"  # ค้นทุกห้อง สรุปห้องที่เจอ
-line-ext-msg --status              # ตรวจ Chrome + login แล้วจบ (เช็ก keepalive)
-line-ext-msg --probe-session       # เขียน session/session_probe.json แบบ redact
-line-ext-msg --qr-zoom 3            # ขยาย QR ใน dialog 3 เท่า (default 2, ช่วง 1-4)
-line-ext-msg --debug-qr             # พิมพ์สภาพหน้า login ตอนแคป QR ไม่ได้
-line-ext-msg --clear-session       # ล้าง session LINE (ถามยืนยันก่อน)
+line-ext-msg --date-from 2026-09-01 --date-to 2026-09-12 --keyword "invoice"
+line-ext-msg --search "invoice"    # search every room and summarise the hits
+line-ext-msg --status              # check Chrome and login, then stop (keepalive)
+line-ext-msg --probe-session       # write a redacted session/session_probe.json
+line-ext-msg --qr-zoom 3           # zoom the QR in the dialog 3 times (default 2, range 1-4)
+line-ext-msg --debug-qr            # log login-page diagnostics when the QR capture fails
+line-ext-msg --verbose             # DEBUG logs (--quiet-log, --log-level, --log-file too)
+line-ext-msg --clear-session       # wipe the LINE session (asks for confirmation)
 ```
 
-ครั้งแรก: โปรแกรมเปิด Chrome โปรไฟล์แยก `%LOCALAPPDATA%\line-chrome-debug` ให้เอง ติดตั้ง LINE แล้วล็อกอิน (Chrome 136+ บล็อก `--remote-debugging-port` บนโปรไฟล์หลักโดยตรง จึงต้องใช้โปรไฟล์แยก) ถ้ายังไม่ติดตั้ง extension โปรแกรมจะเปิดหน้าต่าง Chrome ให้ติดตั้งจากเว็บสโตร์ แล้วรอจนติดตั้งเสร็จ (ปิดหน้าต่าง Chrome เพื่อยกเลิก) จากนั้นกลับ headless ให้เอง ปกติรันแบบ headless ไม่เปิดหน้าต่าง Chrome เลย พอถึงตอนต้องสแกน QR โปรแกรมจะแคป QR จากหน้า login แล้วเปิดหน้าต่าง dialog `LINE` ที่จัดกึ่งกลางจอให้สแกน (ขยาย 2 เท่า ปรับได้ด้วย `--qr-zoom` หรือ `LINE_EXT_MSG_QR_ZOOM`) โดยไม่เด้งหน้าต่าง Chrome dialog รอจนกว่าจะสแกนสำเร็จหรือปิดหน้าต่าง (ปิดด้วยปุ่ม X) ถ้าหลังสแกนแล้ว LINE ขอรหัสยืนยัน dialog จะสลับมาแสดงรหัสนั้นให้เอาไปกรอกในมือถือ แล้วกลับไปแสดง QR อีกครั้งถ้าโฟลว์ย้อนกลับ
+First run: the tool starts Chrome on an isolated profile at `%LOCALAPPDATA%\line-chrome-debug` (Chrome 136+ ignores `--remote-debugging-port` on the default profile). If the LINE extension is missing it opens a headed window at the Web Store, waits until the extension is installed, then returns to headless by itself.
 
-ก่อนจะถอยไปเปิดหน้าต่าง Chrome แบบ headed (`--headed` บังคับเปิดหน้าต่าง, `--headless` บังคับเงียบ) โปรแกรมจะวนรอ canvas ของ QR ก่อน แล้วถ้ายังไม่ได้จะโหลดหน้าใหม่หนึ่งครั้งและลองอีกครั้ง เพราะหน้า SPA ที่ถูกใช้ซ้ำอาจค้างอยู่ ถ้าต้องการดูว่าทำไมแคปไม่ได้ให้เพิ่ม `--debug-qr` และปรับเวลารอได้ด้วย `LINE_EXT_MSG_QR_READY_MS` (default 20000) session เก็บในโปรไฟล์แยกและรอดข้ามการปิดเปิด (พิสูจน์แล้วด้วยการฆ่าโปรเซสทิ้ง) ถ้าหลุดจริงค่อยสแกน QR ใหม่ ไฟล์ output ทั้งหมดอยู่ใน `session/` (git-ignored)
+It normally runs headless with no Chrome window. When a QR scan is needed it captures the QR from the login page and shows it in a centered `LINE` dialog (2x zoom, change with `--qr-zoom` or `LINE_EXT_MSG_QR_ZOOM`). The dialog waits until you scan or close it (the X). If LINE then asks for a verification code, the dialog switches to show that code so you can type it on the phone, and goes back to the QR only when a genuinely new QR appears.
 
-การสลับโหมด headless กับ headed ปิด Chrome อย่างสุภาพผ่าน CDP ก่อน แล้วค่อยใช้ force kill เป็นทางสำรอง
+Before falling back to a headed Chrome window (`--headed` forces a window, `--headless` forces quiet), it waits for the QR canvas, then reloads the page once and retries, because a reused SPA can get stuck. Add `--debug-qr` to see why a capture failed, and tune the wait with `LINE_EXT_MSG_QR_READY_MS` (default 20000). All output files live under `session/` (git-ignored).
 
-session ของ LINE ผูกกับโปรเซส Chrome ไม่ได้ผูกกับดิสก์ token ค้างอยู่ใน Local Storage (`lcs_secure_<mid>` ยาวราว 3.2 KB) จริง แต่กุญแจที่ใช้ถอดรหัสอยู่ในหน้าต่าง sandbox `ltsmSandbox.html` ของ extension ซึ่งไม่มี storage ถาวร พอรีสตาร์ต Chrome แล้วถอดรหัสไม่ได้ก็ต้องสแกน QR ใหม่ โปรแกรมจึงไม่รีสตาร์ต Chrome ที่รันอยู่เพื่อเปลี่ยนโหมด ถ้ามีอินสแตนซ์ที่ล็อกอินค้างอยู่จะเกาะตัวเดิมทันที ทำให้สแกน QR ครั้งเดียวต่ออายุการเปิด Chrome หนึ่งรอบ (ปิด Chrome หรือรีบูตเมื่อไรต้องสแกนใหม่) ส่วน `--headless`/`--headed` มีผลเฉพาะตอนเริ่ม Chrome ใหม่
+Mode switching closes Chrome gracefully over CDP first and only force-kills as a fallback.
 
-## หน้าตาไฟล์ JSON ที่ได้
+The LINE session is tied to the running Chrome process, not to disk. The token stays in Local Storage (`lcs_secure_<mid>`, about 3.2 KB), but the key that decrypts it lives in the extension's sandboxed `ltsmSandbox.html`, which has no persistent storage, so a fresh Chrome asks for the QR again. The tool therefore never restarts a running Chrome just to match a preferred mode: a live instance is reused and stays logged in, so you scan the QR once per Chrome lifetime (closing Chrome or rebooting requires a new scan). `--headless`/`--headed` only apply when a fresh Chrome starts.
+
+### Logging
+
+Results go to stdout; progress and diagnostics go to stderr through the `line_ext_msg` logger. The CLI configures it for you. Flags: `--verbose` (DEBUG), `--quiet-log` (WARNING and above), `--log-level {debug,info,warning,error}`, and `--log-file PATH` for a detailed log. Embedding applications configure the same logger through `line_ext_msg.output.logging.configure`, or attach their own handlers; importing the package emits nothing.
+
+## JSON output
 
 ```json
 {
-  "room": { "index": 0, "id": "CXX...", "name": "ครอบครัว", "unread": 3,
-            "last_preview": "กินข้าวยัง", "last_time": "8:13 AM" },
+  "room": { "index": 0, "id": "CXX...", "name": "Family", "unread": 3,
+            "last_preview": "did you eat", "last_time": "8:13 AM" },
   "fetched_at": "2026-09-12T01:00:00+00:00",
   "messages": [
     { "id": "0178...", "date": "2026-09-12", "ts": "2026-09-12T08:13:00",
-      "sender": "แม่", "from_me": false, "type": "text",
-      "text": "กินข้าวยัง", "read_count": null }
+      "sender": "Mom", "from_me": false, "type": "text",
+      "text": "did you eat", "read_count": null }
   ]
 }
 ```
 
-## ข้อจำกัดที่ควรรู้
+## Limitations
 
-- รายชื่อห้องกับข้อความในห้องเป็น virtualized list โปรแกรมเลื่อนโหลดเพิ่มให้เองแบบมีเพดานเวลา (`LINE_EXT_MSG_ROOMS_SCROLL_MS`, `LINE_EXT_MSG_MSGS_SCROLL_MS`) ปิดได้ด้วย `--no-scroll-msgs` หรือตั้งค่าเป็น 0
-- ได้เฉพาะที่ UI แสดง ไม่มี API สถานะอ่านรายข้อความ
-- session ผูกกับโปรเซส Chrome ที่รันอยู่ ต้องการล็อกอินใหม่เมื่อไหร่โปรแกรมจะแคป QR มาแสดงใน dialog `LINE QR` ให้สแกนเอง ล้าง session เองได้ด้วย `--clear-session` (เก็บ extension ไว้)
-- `from_me` เป็น heuristic (ไม่มี username = เราส่ง) ยังไม่ยืนยันด้วย dump ที่มีข้อความของตัวเอง
+- Room and message lists are virtualized; the tool scrolls to load more within a time budget (`LINE_EXT_MSG_ROOMS_SCROLL_MS`, `LINE_EXT_MSG_MSGS_SCROLL_MS`). Disable with `--no-scroll-msgs` or set the value to 0.
+- Only what the UI renders is readable; there is no per-message read API.
+- The session is tied to the running Chrome process. When a new login is needed the tool shows the QR in the `LINE` dialog. Wipe the session with `--clear-session` (keeps the extension).
+- `from_me` is a heuristic (no username means your own message) and is not yet confirmed with a dump that contains your own messages.
+- Windows only for now. Chrome discovery and process control use Windows paths and PowerShell.
 
-## โครงสร้างโปรเจค
+## Project layout
 
-แพ็กเกจแบ่งเป็นชั้น โดย import ไหลทางเดียวและไม่มี dependency วน
+The package is split into layers with one-way imports and no cycles.
 
 ```
 src/line_ext_msg/
-  config/    ค่าตั้ง ค่าคงที่ และ path เอาต์พุต (ไม่แตะ I/O)
-  domain/    โมเดล typed errors และ filter บริสุทธิ์ (ไม่แตะเบราว์เซอร์)
-  browser/   ทุกอย่างที่แตะ Chrome/Playwright: เปิดโปรเซส, CDP, login, mode, JS
-  scraper/   แปลง DOM เป็นโมเดล: scroll, extract, media, rooms, messages
-  output/    เขียน JSON และพิมพ์ checklist
-  service/   LineClient facade, readiness และ diagnostics
+  config/    settings, constants, and default paths (no I/O)
+  domain/    models, typed errors, pure filters (no browser)
+  browser/   everything that touches Chrome/Playwright: process, CDP, login, mode, JS
+  scraper/   DOM to models: scroll, extract, media, rooms, messages
+  output/    JSON storage, checklist logger, logging setup
+  service/   LineClient facade, readiness, diagnostics, QR dialog
   cli.py     entry point
 ```
 
-public API อยู่ที่ `line_ext_msg/__init__.py` เท่านั้น (`LineClient`, `Room`, `Message`, `StepResult`, `Settings`, `sender_stats` และ error) ส่วนซับแพ็กเกจเป็น implementation detail
+The public API is only `line_ext_msg/__init__.py` (`LineClient`, `Room`, `Message`, `StepResult`, `Settings`, `sender_stats`, and the typed errors). Subpackages are implementation details and may change without notice.
 
-## dev
+## Development
 
 ```powershell
 uv sync --extra dev
@@ -83,10 +91,10 @@ uv run pytest
 uv build
 ```
 
-## ถ้าอ่านห้องไม่ได้ (LINE อัปเดต UI)
+## If rooms cannot be read (LINE UI update)
 
 ```powershell
-line-ext-msg --dump              # DOM หน้า chats → session/dumps/line_dom.html
-line-ext-msg --dump-room 0       # DOM ในห้อง → session/dumps/line_room.html
-# ส่งไฟล์มาเพื่อจูน selector ใน src/line_ext_msg/settings.py
+line-ext-msg --dump             # chats DOM -> session/dumps/line_dom.html
+line-ext-msg --dump-room 0      # room DOM  -> session/dumps/line_room.html
+# send the file to tune the selectors in src/line_ext_msg/config/selectors.py
 ```

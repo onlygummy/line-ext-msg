@@ -54,6 +54,6 @@ def sender_stats(msgs: list[Message]) -> list[dict]:
     for m in msgs:
         if m.type == "system":
             continue
-        name = m.sender or "(เรา)"
+        name = m.sender or "(me)"
         counts[name] = counts.get(name, 0) + 1
     return [{"sender": s, "count": c} for s, c in sorted(counts.items(), key=lambda kv: -kv[1])]

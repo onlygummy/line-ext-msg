@@ -1,10 +1,14 @@
-"""Single checklist printer: [n/total] label ... ผ่าน/ไม่ผ่าน."""
+"""Single checklist logger: [n/total] label ... OK/FAIL/skip."""
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class Steps:
     """Counted checklist; details go on indented sub-lines.
 
-    quiet=True prints nothing (for library/MCP use over stdio).
+    quiet=True logs nothing (for library/MCP use over stdio).
     """
 
     def __init__(self, total: int, quiet: bool = False):
@@ -15,17 +19,16 @@ class Steps:
     def detail(self, text: str) -> None:
         """Debug line under the current step."""
         if not self.quiet:
-            # ASCII prefix: Windows cp874 console has no box-drawing glyph.
-            print(f"   - {text}", flush=True)
+            logger.info("   - %s", text)
 
     def check(self, label: str, passed: bool, hint: str = "") -> bool:
-        """Record one step; print hint line when failed."""
+        """Record one step; log a hint line when failed."""
         self.done += 1
         if not self.quiet:
-            status = "ผ่าน" if passed else "ไม่ผ่าน"
-            print(f"[{self.done}/{self.total}] {label} ... {status}", flush=True)
+            status = "OK" if passed else "FAIL"
+            logger.info("[%d/%d] %s ... %s", self.done, self.total, label, status)
             if not passed and hint:
-                print(f"   - {hint}", flush=True)
+                logger.info("   - %s", hint)
         return passed
 
     def skip_rest(self, reason: str = "") -> None:
@@ -34,4 +37,4 @@ class Steps:
             self.done += 1
             if not self.quiet:
                 suffix = f" ({reason})" if reason else ""
-                print(f"[{self.done}/{self.total}] ข้าม{suffix}", flush=True)
+                logger.info("[%d/%d] skip%s", self.done, self.total, suffix)

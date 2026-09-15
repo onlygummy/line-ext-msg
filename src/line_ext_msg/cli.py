@@ -1,10 +1,17 @@
-"""Thin CLI over LineClient: parse args, print results."""
+"""Thin CLI over LineClient: parse args, print results.
+
+Results go to stdout; progress and diagnostics go through logging on
+stderr, so piping the results stays clean.
+"""
 import argparse
+import logging
+import sys
 
 from .config import paths
 from .config.settings import Settings
 from .domain.errors import LineError
 from .domain.models import Room
+from .output.logging import configure
 from .service.client import LineClient
 
 
@@ -18,13 +25,13 @@ def _oneline(text: str) -> str:
 
 
 def _display(m) -> str:
-    """Full text on one line, or media label when the bubble has no text."""
+    """Full text on one line, or a media label when the bubble has no text."""
     if m.text:
         return _oneline(m.text)
     if m.type == "image":
-        return f"[รูปภาพ: {m.media or 'โหลดไม่สำเร็จ'}]"
+        return f"[image: {m.media or 'download failed'}]"
     if m.type == "sticker":
-        return "[สติกเกอร์]"
+        return "[sticker]"
     if m.type == "system":
         return _oneline(m.text)
     return f"[{m.type}]"
@@ -36,9 +43,9 @@ def _display_dict(m: dict) -> str:
     if text:
         return text
     if m.get("type") == "image":
-        return f"[รูปภาพ: {m.get('media') or 'โหลดไม่สำเร็จ'}]"
+        return f"[image: {m.get('media') or 'download failed'}]"
     if m.get("type") == "sticker":
-        return "[สติกเกอร์]"
+        return "[sticker]"
     return f"[{m.get('type')}]"
 
 
@@ -48,86 +55,106 @@ def _who(sender: str) -> str:
 
 
 def pick_room(rooms: list[Room]) -> Room:
-    """Show rooms in terminal and return user choice."""
-    print("\nห้องแชททั้งหมด:")
+    """Show rooms in the terminal and return the user choice."""
+    print("\nChat rooms:")
     for r in rooms:
-        unread = f" ({r.unread} ไม่อ่าน)" if r.unread else ""
+        unread = f" ({r.unread} unread)" if r.unread else ""
         print(f"  [{r.index}] {r.name}{unread}")
     while True:
-        raw = input("พิมพ์เลขห้อง > ").strip()
+        raw = input("Room number > ").strip()
         if raw.isdigit() and any(r.index == int(raw) for r in rooms):
             return next(r for r in rooms if r.index == int(raw))
-        print("เลขไม่ถูกต้อง ลองใหม่")
+        print("Invalid number, try again")
 
 
 def ask_limit(default: int = 5) -> int:
     """Ask how many messages to fetch. Empty = default, 0 = all rendered."""
     while True:
-        raw = input(f"จำนวนข้อความ (default {default}, 0=ทั้งหมด) > ").strip()
+        raw = input(f"How many messages (default {default}, 0=all) > ").strip()
         if not raw:
             return default
         if raw.isdigit():
             return int(raw)
-        print("ตัวเลขไม่ถูกต้อง ลองใหม่")
+        print("Invalid number, try again")
 
 
-def main():
-    parser = argparse.ArgumentParser(description="ดึงข้อความล่าสุดจาก LINE Extension")
+def _configure_logging(args) -> None:
+    """Pick the log level from the flags and attach handlers."""
+    level = logging.INFO
+    if args.verbose:
+        level = logging.DEBUG
+    elif args.quiet_log:
+        level = logging.WARNING
+    if args.log_level:
+        level = getattr(logging, args.log_level.upper(), level)
+    if args.debug_scroll or args.debug_qr:
+        level = min(level, logging.DEBUG)
+    configure(level, log_file=args.log_file)
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Pull messages from the LINE Chrome Extension")
     parser.add_argument("--limit", type=int, default=None,
-                        help="จำนวนข้อความล่าสุด (ไม่ใส่จะถามตอนเลือกห้อง)")
-    parser.add_argument("--date", default=None, help="กรองเฉพาะวันที่ YYYY-MM-DD")
-    parser.add_argument("--date-from", default=None, help="ตั้งแต่วันที่ YYYY-MM-DD")
-    parser.add_argument("--date-to", default=None, help="ถึงวันที่ YYYY-MM-DD")
-    parser.add_argument("--time-from", default=None, help="ตั้งแต่เวลา HH:MM")
-    parser.add_argument("--time-to", default=None, help="ถึงเวลา HH:MM")
-    parser.add_argument("--sender", default=None, help="กรองชื่อคนส่ง (บางส่วน)")
-    parser.add_argument("--keyword", default=None, help="ค้นคำในข้อความ")
+                        help="number of latest messages (ask when picking a room if omitted)")
+    parser.add_argument("--date", default=None, help="only this day, YYYY-MM-DD")
+    parser.add_argument("--date-from", default=None, help="from this day, YYYY-MM-DD")
+    parser.add_argument("--date-to", default=None, help="up to this day, YYYY-MM-DD")
+    parser.add_argument("--time-from", default=None, help="from this time, HH:MM")
+    parser.add_argument("--time-to", default=None, help="up to this time, HH:MM")
+    parser.add_argument("--sender", default=None, help="filter sender name (substring)")
+    parser.add_argument("--keyword", default=None, help="search text (substring)")
     parser.add_argument("--search", default=None, metavar="KEYWORD",
-                        help="ค้นทุกห้อง แล้วสรุปห้องที่เจอ")
-    parser.add_argument("--unread", action="store_true", help="แสดงเฉพาะห้องที่ไม่อ่าน")
-    parser.add_argument("--save", action="store_true", help="เขียน session/rooms.json + session/messages ลงไฟล์ (default พิมพ์จออย่างเดียว)")
-    parser.add_argument("--dump", action="store_true", help="บันทึก DOM ดิบเพื่อจูน selector (session/dumps/)")
+                        help="search every room and summarise the hits")
+    parser.add_argument("--unread", action="store_true", help="only rooms with unread messages")
+    parser.add_argument("--save", action="store_true",
+                        help="write session/rooms.json and session/messages_*.json (default: screen only)")
+    parser.add_argument("--dump", action="store_true",
+                        help="save the raw DOM for selector tuning (session/dumps/)")
     parser.add_argument("--dump-room", type=int, default=None, metavar="INDEX",
-                        help="เปิดห้องลำดับ INDEX แล้วบันทึก DOM เพื่อจูน selector ข้อความ (session/dumps/)")
+                        help="open room INDEX and save its DOM for message selector tuning (session/dumps/)")
     parser.add_argument("--wait-login", dest="wait_login", action="store_true", default=None,
-                        help="รอหน้าล็อกอินจนกว่าจะล็อกอินเสร็จ (default ในโหมดคนใช้)")
+                        help="wait on the login screen until login finishes (default in human mode)")
     parser.add_argument("--no-wait-login", dest="no_wait_login", action="store_true",
-                        help="เจอหน้าล็อกอินแล้วจบเลย ไม่รอ")
+                        help="stop as soon as the login screen shows")
     parser.add_argument("--login-timeout-s", type=float, default=None, metavar="SEC",
-                        help="เวลารอสูงสุดของเส้นทาง headed fallback (default 300) ไม่มีผลกับ dialog QR ที่รอจนปิดหน้าต่าง")
+                        help="timeout for the headed fallback (default 300); the QR dialog waits until closed")
     parser.add_argument("--no-scroll-msgs", dest="no_scroll_msgs", action="store_true",
-                        help="อ่านแค่ข้อความบนจอ ไม่เลื่อนย้อนหลัง")
+                        help="read only what is on screen, do not scroll back")
     parser.add_argument("--scroll-budget-s", type=float, default=None, metavar="SEC",
-                        help="งบเวลาเลื่อนโหลดสูงสุดเป็นวินาที (default 8)")
+                        help="base scroll budget in seconds (default 8)")
     parser.add_argument("--debug-scroll", dest="debug_scroll", action="store_true", default=None,
-                        help="พิมพ์ telemetry การเลื่อนทีละรอบ")
+                        help="log scroll telemetry each round")
     parser.add_argument("--status", action="store_true",
-                        help="ตรวจ Chrome + login แล้วจบ ไม่ต้องเลือกห้อง (เช็ก keepalive)")
+                        help="check Chrome and login, then stop (keepalive check)")
     parser.add_argument("--probe-session", action="store_true",
-                        help="บันทึก session/session_probe.json แบบ redact เพื่อดูว่า token อยู่ไหน")
+                        help="write a redacted session/session_probe.json to see where the token lives")
     parser.add_argument("--headless", dest="headless", action="store_true", default=None,
-                        help="รัน Chrome แบบไม่เปิดหน้าต่าง (default)")
+                        help="run Chrome without a window (default)")
     parser.add_argument("--headed", dest="headed", action="store_true",
-                        help="เริ่ม Chrome แบบเปิดหน้าต่าง (ใช้ตอนต้องสแกน QR)")
+                        help="start Chrome with a window (for the QR scan)")
     parser.add_argument("--qr-zoom", dest="qr_zoom", type=int, default=None, metavar="N",
-                        help="ขยาย QR ใน dialog N เท่า (default 2, ช่วง 1-4)")
+                        help="zoom the QR in the dialog N times (default 2, range 1-4)")
     parser.add_argument("--debug-qr", dest="debug_qr", action="store_true", default=None,
-                        help="พิมพ์สภาพหน้า login ตอนแคป QR ไม่ได้ (ไม่มีความลับ)")
+                        help="log login-page diagnostics when the QR capture fails (no secrets)")
     parser.add_argument("--clear-session", dest="clear_session", action="store_true",
-                        help="ล้าง session LINE ในโปรไฟล์ debug (เก็บ extension ไว้)")
+                        help="wipe the LINE session in the debug profile (keeps the extension)")
     parser.add_argument("--yes", action="store_true",
-                        help="ข้ามถามยืนยันสำหรับ --clear-session")
-    args = parser.parse_args()
+                        help="skip the confirmation for --clear-session")
+    parser.add_argument("--verbose", action="store_true", help="log at DEBUG level")
+    parser.add_argument("--quiet-log", dest="quiet_log", action="store_true",
+                        help="log only warnings and errors")
+    parser.add_argument("--log-level", dest="log_level", default=None,
+                        choices=["debug", "info", "warning", "error"],
+                        help="explicit log level (overrides --verbose/--quiet-log)")
+    parser.add_argument("--log-file", dest="log_file", default=None, metavar="PATH",
+                        help="also write detailed logs to this file")
+    return parser
 
-    wait_flag = None
-    if args.no_wait_login:
-        wait_flag = False
-    elif args.wait_login:
-        wait_flag = True
-    wait_ms = int(args.login_timeout_s * 1000) if args.login_timeout_s is not None else None
+
+def _settings_from_args(args) -> Settings | None:
     overrides: dict = {}
-    if wait_ms is not None:
-        overrides["login_wait_ms"] = wait_ms
+    if args.login_timeout_s is not None:
+        overrides["login_wait_ms"] = int(args.login_timeout_s * 1000)
     if args.scroll_budget_s is not None:
         overrides["messages_scroll_ms"] = int(args.scroll_budget_s * 1000)
     if args.debug_scroll:
@@ -140,50 +167,64 @@ def main():
         overrides["qr_zoom"] = args.qr_zoom
     if args.debug_qr:
         overrides["debug_qr"] = True
-    settings = Settings(**overrides) if overrides else None
+    return Settings(**overrides) if overrides else None
+
+
+def main():
+    parser = _build_parser()
+    args = parser.parse_args()
+    _configure_logging(args)
+
+    wait_flag = None
+    if args.no_wait_login:
+        wait_flag = False
+    elif args.wait_login:
+        wait_flag = True
+    wait_ms = int(args.login_timeout_s * 1000) if args.login_timeout_s is not None else None
+    settings = _settings_from_args(args)
 
     try:
         with LineClient(settings) as line:
             if args.clear_session:
                 if not args.yes:
-                    raw = input("ล้าง session LINE ในโปรไฟล์ debug? พิมพ์ yes เพื่อยืนยัน > ").strip()
+                    raw = input("Clear the LINE session in the debug profile? Type yes to confirm > ").strip()
                     if raw.lower() not in ("yes", "y"):
-                        print("ยกเลิกแล้ว ไม่ลบอะไร")
+                        print("Cancelled, nothing removed")
                         return
                 summary = line.clear_session(backup=True)
-                print(f"ล้าง session แล้ว backup={summary.get('backup')} wiped={summary.get('wiped')}")
+                print(f"Session cleared: backup={summary.get('backup')} wiped={summary.get('wiped')}")
                 return
             if args.dump:
                 state = line.dump_page()
-                print(f"บันทึก session/dumps/line_dom.html แล้ว (state={state}) ส่งไฟล์นี้มาเพื่อจูน selector")
+                print(f"Saved {paths.PAGE_DUMP} (state={state}). Send this file to tune selectors.")
                 return
             line.status(wait_for_login=wait_flag, login_timeout_ms=wait_ms)
             if args.status:
-                print("Chrome + LINE พร้อม (keepalive โอเค ปิด CLI ได้โดยไม่ปิด Chrome)")
+                print("Chrome + LINE ready (keepalive OK; closing the CLI keeps Chrome running)")
                 return
             if args.probe_session:
                 out = line.save_probe()
                 data = line.probe_session()
-                print(f"บันทึก {out} แล้ว (redact ค่า เหลือแค่ชื่อคีย์)")
+                print(f"Saved {out} (redacted, key names only)")
                 print(f"login={data.get('logged_in')} session_keys={len(data.get('session_keys', {}))} "
                       f"local_keys={len(data.get('local_keys', {}))} targets={len(data.get('targets', []))}")
                 return
             if args.dump_room is not None:
                 room = line.dump_room(args.dump_room)
-                print(f"บันทึก session/dumps/line_room.html แล้ว (ห้อง {room.name}) ส่งไฟล์นี้มาเพื่อจูน selector ข้อความ")
+                print(f"Saved {paths.ROOM_DUMP} (room {room.name}). Send this file to tune message selectors.")
                 return
             rooms = line.list_rooms(unread_only=args.unread)
             if not rooms:
-                print("อ่านรายชื่อห้องไม่ได้ รัน --dump แล้วส่ง session/dumps/line_dom.html มา")
+                print(f"Could not read the room list. Run --dump and send {paths.PAGE_DUMP}.")
                 return
             if args.save:
                 path = line.save_rooms(unread_only=args.unread)
-                print(f"บันทึก {path} ({len(rooms)} ห้อง)")
+                print(f"Saved {path} ({len(rooms)} rooms)")
             if args.search:
                 for hit in line.search_all(args.search,
                                            date_from=args.date_from or args.date,
                                            date_to=args.date_to or args.date):
-                    print(f"\n== {hit['room']['name']} ({len(hit['messages'])} ข้อความ) ==")
+                    print(f"\n== {hit['room']['name']} ({len(hit['messages'])} messages) ==")
                     for m in hit["messages"]:
                         print(f"[{m['date']} {m['ts']}] {_who(m['sender'])}{_display_dict(m)}")
                 return
@@ -195,21 +236,20 @@ def main():
                         scroll=not args.no_scroll_msgs)
             if args.save:
                 out = line.save_messages(chosen, **filt)
-                print(f"บันทึก {out}")
-            print(f"กำลังเปิดห้อง {chosen.name} ...", flush=True)
+                print(f"Saved {out}")
+            print(f"Opening room {chosen.name} ...", flush=True)
             msgs = line.get_messages(chosen, **filt)
             if not msgs:
-                print("เปิดห้องได้แต่อ่านข้อความไม่ได้")
-                print(f"รัน uv run line-ext-msg --dump-room {chosen.index} แล้วส่ง line_room.html มา")
+                print("Opened the room but could not read messages")
+                print(f"Run line-ext-msg --dump-room {chosen.index} and send {paths.ROOM_DUMP}")
                 return
             for m in msgs:
                 print(f"[{m.date} {m.ts}] {_who(m.sender)}{_display(m)}")
-            if not line.settings.quiet:
-                print("ทิป: เปิดหน้าต่าง Chrome debug ทิ้งไว้ ครั้งหน้าจะได้ไม่ต้องล็อกอินใหม่", flush=True)
+            print("Tip: keep the debug Chrome window open to avoid logging in again", flush=True)
     except KeyboardInterrupt:
-        print("\nยกเลิกการรอแล้ว")
+        print("\nCancelled while waiting")
     except LineError as e:
-        print(e)
+        print(e, file=sys.stderr)
 
 
 if __name__ == "__main__":

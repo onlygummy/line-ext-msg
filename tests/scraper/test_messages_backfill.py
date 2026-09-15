@@ -1,5 +1,6 @@
 """Message backfill scroll: stop rules without a browser."""
 
+import logging
 from typing import cast
 
 from playwright.sync_api import Page
@@ -452,7 +453,8 @@ def test_wheel_fallback_wakes_wheel_only_loader():
     assert page.wheeled >= 1
 
 
-def test_box_info_logged_when_not_quiet(capsys):
+def test_box_info_logged(caplog):
+    caplog.set_level(logging.INFO, logger="line_ext_msg")
     page = _FakePage(start=5, total=5)
     old = _patch_selectors(scroll, message_item="msg")
     try:
@@ -460,7 +462,7 @@ def test_box_info_logged_when_not_quiet(capsys):
             cast(Page, page), Settings(), need=50)
     finally:
         scroll.SELECTORS = old
-    assert "กล่อง scroll" in capsys.readouterr().out
+    assert "scroll box" in caplog.text
 
 
 def test_scroll_date_change_resets_stability():
@@ -505,7 +507,8 @@ def test_wheel_dips_down_then_up():
     assert page.wheel_moves.index((0, downs[0])) < page.wheel_moves.index((0, ups[0]))
 
 
-def test_wheel_attempt_logged(capsys):
+def test_wheel_attempt_logged(caplog):
+    caplog.set_level(logging.INFO, logger="line_ext_msg")
     page = _FakePage(start=5, total=15, top_zero=True, slow_rounds=999,
                      wheel_loads=True)
     old = _patch_selectors(scroll, message_item="msg")
@@ -515,7 +518,7 @@ def test_wheel_attempt_logged(capsys):
     finally:
         scroll.SELECTORS = old
     assert reason == "need"
-    assert "หมุน wheel" in capsys.readouterr().out
+    assert "wheel attempt" in caplog.text
 
 
 def test_reverse_box_walks_negative_to_need():

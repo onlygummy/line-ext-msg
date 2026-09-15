@@ -4,9 +4,29 @@ The fixtures are thin wrappers so tests can request helpers by name;
 `tests/helpers.py` holds the plain functions for direct imports too.
 """
 
+import logging
+
 import pytest
 
 from tests.helpers import make_settings, patch_selectors
+
+PACKAGE_LOGGER = "line_ext_msg"
+
+
+@pytest.fixture(autouse=True)
+def _reset_package_logger():
+    """Restore the package logger so one test cannot leak handlers/level."""
+    logger = logging.getLogger(PACKAGE_LOGGER)
+    handlers = list(logger.handlers)
+    propagate = logger.propagate
+    level = logger.level
+    yield
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+    for handler in handlers:
+        logger.addHandler(handler)
+    logger.propagate = propagate
+    logger.setLevel(level)
 
 
 @pytest.fixture

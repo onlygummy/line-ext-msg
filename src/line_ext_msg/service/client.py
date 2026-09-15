@@ -4,9 +4,10 @@ Typical use (also the shape MCP tools wrap)::
 
     with LineClient() as line:
         rooms = line.list_rooms(unread_only=True)
-        msgs = line.get_messages("ครอบครัว", limit=5)
+        msgs = line.get_messages("Family", limit=5)
 """
 
+import logging
 from dataclasses import asdict
 
 from ..browser import process as _process
@@ -21,6 +22,8 @@ from ..scraper import rooms as _rooms
 from . import diagnostics as _diagnostics
 from . import maintenance as _maintenance
 from . import readiness as _readiness
+
+logger = logging.getLogger(__name__)
 
 
 class LineClient:
@@ -125,8 +128,7 @@ class LineClient:
         day = date or _date.today().isoformat()
         out = []
         for i, room in enumerate(self.list_rooms(unread_only=True)):
-            if not self.settings.quiet:
-                print(f"  ... ห้อง {i + 1}: {room.name}", flush=True)
+            logger.info("unread room %d/%d: %s", i + 1, len(self.list_rooms(unread_only=True)), room.name)
             rooms = self.list_rooms()
             _rooms.open_room(self._ready_page(), room, rooms, self.settings)
             msgs = self.get_messages(limit=limit_per_room, date=day)
@@ -156,8 +158,7 @@ class LineClient:
             targets = wanted
         out = []
         for i, room in enumerate(targets):
-            if not self.settings.quiet:
-                print(f"  ... ค้นห้อง {i + 1}/{len(targets)}: {room.name}", flush=True)
+            logger.info("searching room %d/%d: %s", i + 1, len(targets), room.name)
             _rooms.open_room(self._ready_page(), room, self.list_rooms(), self.settings)
             msgs = self.get_messages(
                 limit=limit_per_room, date_from=date_from, date_to=date_to, keyword=keyword,

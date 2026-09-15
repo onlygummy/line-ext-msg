@@ -1,6 +1,7 @@
 """Chrome lifecycle: start the debug instance and read its CDP mode."""
 
 import json
+import logging
 import os
 import subprocess
 import time
@@ -8,6 +9,8 @@ import urllib.request
 
 from ..config.settings import Settings
 from . import process
+
+logger = logging.getLogger(__name__)
 
 
 def cdp_version(settings: Settings, timeout_sec: int = 2) -> dict:
@@ -17,14 +20,19 @@ def cdp_version(settings: Settings, timeout_sec: int = 2) -> dict:
             f"{settings.cdp_endpoint}/json/version", timeout=timeout_sec
         ) as res:
             data = json.loads(res.read().decode("utf-8", errors="ignore"))
-        return data if isinstance(data, dict) else {}
-    except Exception:
+        payload = data if isinstance(data, dict) else {}
+        logger.debug("cdp version: %s", payload.get("Browser", "?"))
+        return payload
+    except Exception as e:
+        logger.debug("cdp version probe failed: %s", e)
         return {}
 
 
 def is_debug_ready(settings: Settings, timeout_sec: int = 2) -> bool:
     """Check the CDP endpoint responds with a valid Browser field."""
-    return bool(cdp_version(settings, timeout_sec).get("Browser"))
+    ready = bool(cdp_version(settings, timeout_sec).get("Browser"))
+    logger.debug("debug ready: %s", ready)
+    return ready
 
 
 def is_headless(settings: Settings, timeout_sec: int = 2) -> bool:
@@ -35,7 +43,9 @@ def is_headless(settings: Settings, timeout_sec: int = 2) -> bool:
     """
     info = cdp_version(settings, timeout_sec)
     blob = f"{info.get('Browser', '')} {info.get('User-Agent', '')}"
-    return "headless" in blob.lower()
+    headless = "headless" in blob.lower()
+    logger.debug("headless detect: %s", headless)
+    return headless
 
 
 def start_chrome_debug(settings: Settings) -> None:
@@ -48,10 +58,12 @@ def start_chrome_debug(settings: Settings) -> None:
 
     exe = process.find_chrome_exe()
     if exe is None:
-        raise ChromeNotReady("ไม่พบ chrome.exe กรุณาติดตั้ง Chrome ก่อน")
+        logger.error("chrome.exe not found in the known install paths")
+        raise ChromeNotReady("chrome.exe not found. Install Google Chrome first")
     data_dir = process.expand(settings.profile_dir)
     if process.is_profile_locked(data_dir):
-        raise ChromeNotReady("โปรไฟล์ Chrome ถูกใช้อยู่ ปิดหน้าต่าง debug เก่าก่อนแล้วรันใหม่")
+        logger.error("profile is locked: %s", data_dir)
+        raise ChromeNotReady("Chrome profile is in use. Close the old debug window and run again")
     os.makedirs(data_dir, exist_ok=True)
     # Open LINE chats as the first tab so no New Tab lingers at index 0.
     # Headless is the default: no window unless login needs a QR scan.
@@ -59,6 +71,8 @@ def start_chrome_debug(settings: Settings) -> None:
     if settings.headless:
         args.append("--headless=new")
     args.append(settings.chats_url)
+    logger.info("starting Chrome (headless=%s) on port %s", settings.headless, settings.port)
+    logger.debug("chrome args: %s", args)
     subprocess.Popen(
         args,
         stdout=subprocess.DEVNULL,
@@ -67,17 +81,19 @@ def start_chrome_debug(settings: Settings) -> None:
     )
     for _ in range(30):
         if is_debug_ready(settings, timeout_sec=1):
+            logger.info("Chrome debug port is up")
             return
         time.sleep(0.5)
-    raise ChromeNotReady("เปิด Chrome แล้วแต่พอร์ต debug ไม่ตอบใน 15 วิ")
+    logger.error("Chrome started but the debug port stayed silent for 15s")
+    raise ChromeNotReady("Chrome started but the debug port did not respond within 15s")
 
 
 def port_hint(settings: Settings) -> str:
     """One-line hint for CDP port conflicts (pure, no side effects)."""
     return (
-        f"พอร์ต {settings.port} ถูกใช้อยู่ ตรวจด้วย: "
+        f"port {settings.port} is in use. Check with: "
         f"netstat -ano | findstr {settings.port} "
-        "หรือย้ายพอร์ตด้วย LINE_EXT_MSG_PORT"
+        "or change it with LINE_EXT_MSG_PORT"
     )
 
 
@@ -91,6 +107,7 @@ def ensure_chrome(settings: Settings) -> None:
     from ..domain.errors import ChromeNotReady
 
     if is_debug_ready(settings) and is_headless(settings) == settings.headless:
+        logger.debug("Chrome already running in the expected mode")
         return
     try:
         start_chrome_debug(settings)
