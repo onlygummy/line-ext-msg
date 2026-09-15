@@ -116,16 +116,25 @@ class QrDialog:
         return True
 
     def set_pin(self, pin: str, desc: str = "") -> None:
-        """Update the PIN step shown in the dialog (empty when back to QR)."""
+        """Update the PIN step shown in the dialog."""
         if (pin, desc) == self._pin:
             return
         self._pin = (pin, desc)
         _write_status(self.status, "waiting", pin=pin, desc=desc)
 
+    def show_qr(self, data_uri: str) -> None:
+        """Write the QR image and switch the dialog back to the QR state.
+
+        Called only when a genuinely new QR appears, so a PIN that is being
+        verified is never replaced by a stale QR image.
+        """
+        self.update(data_uri)
+        self._pin = ("", "")
+        _write_status(self.status, "waiting", pin="", desc="")
+
     def open(self, data_uri: str) -> None:
         """Write the first QR image, then launch the viewer process."""
-        self.update(data_uri)
-        _write_status(self.status, "waiting", pin="", desc="")
+        self.show_qr(data_uri)
         try:
             self._proc = subprocess.Popen(
                 [sys.executable, "-m", "line_ext_msg.service.qr_view",

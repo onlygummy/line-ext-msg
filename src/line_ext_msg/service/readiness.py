@@ -166,6 +166,7 @@ def _qr_login(client) -> str:
         print("แสดง QR ในหน้าต่าง (ปิดเพื่อยกเลิก)", flush=True)
 
     logged = False
+    shown = data_uri
     try:
         while True:
             ok, _ = auth.check_login(page, timeout_ms=500)
@@ -175,10 +176,16 @@ def _qr_login(client) -> str:
             if not dialog.alive():
                 break
             pin, desc = _login_pin(page)
-            dialog.set_pin(pin, desc)
-            new_uri = _qr_data(page)
-            if new_uri:
-                dialog.update(new_uri)
+            if pin:
+                dialog.set_pin(pin, desc)
+            else:
+                # Keep the PIN visible while verification runs: only go back
+                # to the QR when a genuinely new one appears, otherwise a
+                # stale QR image flashes after the code is entered.
+                uri = _qr_data(page)
+                if uri and uri != shown:
+                    dialog.show_qr(uri)
+                    shown = uri
             try:
                 page.wait_for_timeout(500)
             except Exception:

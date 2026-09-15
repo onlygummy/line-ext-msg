@@ -85,6 +85,18 @@ def test_set_pin_writes_status(tmp_path):
     assert data == {"state": "waiting", "pin": "5239", "desc": "enter on phone"}
 
 
+def test_show_qr_writes_png_and_clears_pin(tmp_path):
+    png = str(tmp_path / "qr.png")
+    status = str(tmp_path / "status.json")
+    dialog = qr.QrDialog(png=png, status=status)
+    dialog.set_pin("5239")
+    dialog.show_qr(_png_uri(b"qr"))
+    assert open(png, "rb").read() == b"qr"
+    with open(status, encoding="utf-8") as f:
+        data = json.load(f)
+    assert data == {"state": "waiting", "pin": "", "desc": ""}
+
+
 def test_clamp_zoom_bounds():
     assert qr.clamp_zoom(2) == 2
     assert qr.clamp_zoom(0) == qr.MIN_ZOOM

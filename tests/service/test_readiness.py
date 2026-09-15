@@ -58,6 +58,7 @@ class _Dialog:
         self.zoom = zoom
         self.opened = None
         self.updated = []
+        self.qr_shows = []
         self.pins = []
         self.finished = None
         self._alive = True
@@ -65,6 +66,10 @@ class _Dialog:
 
     def open(self, data_uri):
         self.opened = data_uri
+
+    def show_qr(self, data_uri):
+        self.qr_shows.append(data_uri)
+        self.updated.append(data_uri)
 
     def update(self, data_uri):
         self.updated.append(data_uri)
@@ -95,6 +100,7 @@ def _patch_env(monkeypatch):
     # The reload path calls into the real readiness probe; stub it out.
     monkeypatch.setattr(readiness.session, "wait_ready", lambda page, settings: "ready")
     monkeypatch.setattr(readiness.session, "close_startup_tabs", lambda settings: None)
+    monkeypatch.setattr(readiness.session, "close_extension_tabs", lambda settings: None)
     monkeypatch.setattr(readiness.time, "sleep", lambda _s: None)
     yield
 
@@ -126,6 +132,57 @@ def test_login_pin_reads_fields():
 
 def test_login_pin_empty_on_bad_payload():
     assert readiness._login_pin(_BadPayloadPage()) == ("", "")
+
+
+def test_qr_login_keeps_pin_until_done(monkeypatch):
+    pins = {"n": 0}
+
+    def fake_pin(page):
+        pins["n"] += 1
+        return ("5239", "d") if pins["n"] <= 2 else ("", "")
+
+    monkeypatch.setattr(readiness, "_login_pin", fake_pin)
+    monkeypatch.setattr(readiness, "_qr_data", lambda page: _URI)  # unchanged QR
+    checks = {"n": 0}
+
+    def fake_check(page, timeout_ms=0):
+        checks["n"] += 1
+        return (checks["n"] >= 4, "chat")
+
+    monkeypatch.setattr(readiness.auth, "check_login", fake_check)
+    client = _Client(_Page(), make_settings())
+    assert readiness._qr_login(client) == "ok"
+    dialog = _Dialog.instances[-1]
+    assert ("5239", "d") in dialog.pins
+    assert dialog.pins[-1] == ("5239", "d")  # never cleared
+    assert dialog.qr_shows == []  # never flashed back to QR
+
+
+def test_qr_login_returns_to_qr_on_new_uri(monkeypatch):
+    pins = {"n": 0}
+
+    def fake_pin(page):
+        pins["n"] += 1
+        return ("5239", "d") if pins["n"] == 1 else ("", "")
+
+    monkeypatch.setattr(readiness, "_login_pin", fake_pin)
+    uris = {"n": 0}
+
+    def fake_qr(page):
+        uris["n"] += 1
+        return _URI if uris["n"] == 1 else "data:image/png;base64,TkVX"
+
+    monkeypatch.setattr(readiness, "_qr_data", fake_qr)
+    checks = {"n": 0}
+
+    def fake_check(page, timeout_ms=0):
+        checks["n"] += 1
+        return (checks["n"] >= 3, "chat")
+
+    monkeypatch.setattr(readiness.auth, "check_login", fake_check)
+    client = _Client(_Page(), make_settings())
+    assert readiness._qr_login(client) == "ok"
+    assert _Dialog.instances[-1].qr_shows == ["data:image/png;base64,TkVX"]
 
 
 def test_qr_login_passes_pin_to_dialog(monkeypatch):
