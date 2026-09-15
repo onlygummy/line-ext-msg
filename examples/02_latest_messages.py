@@ -1,6 +1,6 @@
 """02 - Export latest messages of one room to JSON.
 
-Run: uv run python examples/02_latest_messages.py --room "ครอบครัว" --limit 5
+Run: uv run python examples/02_latest_messages.py --room "Family" --limit 5
 """
 import argparse
 
@@ -15,8 +15,9 @@ def main() -> None:
 
     with LineClient() as line:
         line.status()
-        out = line.save_messages(args.room, limit=args.limit)
-        print(f"บันทึก {out}")
+        msgs = line.get_messages(args.room, limit=args.limit, with_media=True)
+        msgs = msgs.download_media("session/media")
+        print(f"Saved {msgs.save('session/messages.json')}")
 
 
 if __name__ == "__main__":

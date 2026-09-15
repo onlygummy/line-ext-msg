@@ -3,7 +3,7 @@
 from unittest.mock import patch
 
 from line_ext_msg.cli import _display, _oneline, ask_limit
-from line_ext_msg.models import Message
+from line_ext_msg.domain.models import Message
 
 
 def test_empty_returns_default():

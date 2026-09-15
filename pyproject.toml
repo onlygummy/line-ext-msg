@@ -1,6 +1,6 @@
 [project]
 name = "line-ext-msg"
-version = "1.2.0"
+version = "2.0.0"
 description = "Pull messages from LINE Chrome Extension via Playwright CDP (own account, read-only)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -10,12 +10,12 @@ keywords = ["line", "chrome-extension", "playwright", "cdp"]
 classifiers = [
   "Programming Language :: Python :: 3",
   "License :: OSI Approved :: MIT License",
-  "Operating System :: OS Independent",
+  "Operating System :: Microsoft :: Windows",
 ]
 dependencies = ["playwright>=1.40"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
 
 [project.scripts]
 line-ext-msg = "line_ext_msg.cli:main"
@@ -32,3 +32,21 @@ packages = ["src/line_ext_msg"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = [
+  # The scroll loop keeps intentional redundant parens for clarity.
+  "E501",
+]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src"]
+ignore_missing_imports = true
+warn_unused_ignores = false

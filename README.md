@@ -1,65 +1,277 @@
 # line-ext-msg
 
-ดึงข้อความ (เวลา + คนส่ง + ข้อความ + วันที่ + สถานะ) จาก LINE Chrome Extension ผ่าน Playwright แบบเกาะ Chrome ตัวจริง บัญชีของตัวเอง อ่านอย่างเดียว
+Pull messages (time + sender + text + date + read count) from the LINE Chrome Extension through Playwright. Ships as a Python library (`LineClient`) and a thin CLI. It attaches to your real Chrome and your own account, read-only.
 
-## ติดตั้ง
+## Install
 
 ```powershell
 pip install line-ext-msg
 ```
 
-ต้องมี Google Chrome ในเครื่อง ไม่ต้องรัน `playwright install` เพราะโปรแกรมเกาะ Chrome ที่มีอยู่ผ่าน CDP ไม่ได้ใช้ bundled chromium
+Google Chrome must be installed. You do not need `playwright install`: the library attaches to the running Chrome over CDP and never uses the bundled chromium. Windows only for now.
 
-## ใช้งาน CLI
+## Quick start
 
-```powershell
-line-ext-msg                       # เลือกห้องใน Terminal → พิมพ์จออย่างเดียว ไม่สร้างไฟล์
-line-ext-msg --save                # + เขียน session/rooms.json + session/messages_{index}.json
-line-ext-msg --unread               # แสดงเฉพาะห้องที่ไม่อ่าน
-line-ext-msg --limit 10 --date 2026-09-12
-line-ext-msg --date-from 2026-09-01 --date-to 2026-09-12 --keyword "ใบแจ้งหนี้"
-line-ext-msg --search "ใบแจ้งหนี้"  # ค้นทุกห้อง สรุปห้องที่เจอ
-line-ext-msg --status              # ตรวจ Chrome + login แล้วจบ (เช็ก keepalive)
-line-ext-msg --probe-session       # เขียน session/session_probe.json แบบ redact
-line-ext-msg --clear-session       # ล้าง session LINE (ถามยืนยันก่อน)
+```python
+from line_ext_msg import LineClient
+
+with LineClient(quiet=True) as line:
+    line.status(wait_for_login=True)  # shows the QR dialog if a login is needed
+    for room in line.list_rooms(unread_only=True):
+        print(room.name, room.unread)
+    for m in line.get_messages("Family", limit=20, keyword="invoice"):
+        print(m.date, m.sender, m.text)
 ```
 
-ครั้งแรก: โปรแกรมเปิด Chrome โปรไฟล์แยก `%LOCALAPPDATA%\line-chrome-debug` ให้เอง ติดตั้ง LINE + ล็อกอินในหน้าต่างนั้น (Chrome 136+ บล็อก `--remote-debugging-port` บนโปรไฟล์หลักโดยตรง จึงต้องใช้โปรไฟล์แยก) ปกติรันแบบ headless ไม่เปิดหน้าต่าง จะเด้ง headed ขึ้นมาเฉพาะตอนต้องสแกน QR เท่านั้น (`--headed` บังคับเปิดหน้าต่าง, `--headless` บังคับเงียบ) session เก็บในโปรไฟล์แยกและรอดข้ามการปิดเปิด (พิสูจน์แล้วด้วยการฆ่าโปรเซสทิ้ง) ถ้าหลุดจริงค่อยสแกน QR ใหม่ ไฟล์ output ทั้งหมดอยู่ใน `session/` (git-ignored)
+`LineClient` is a context manager. On first use it starts (or reuses) the debug Chrome on an isolated profile, and on exit it only detaches: Chrome keeps running so the session survives for the next run.
 
-## หน้าตาไฟล์ JSON ที่ได้
+## LineClient at a glance
+
+| Method | Returns | Notes |
+|---|---|---|
+| `status(wait_for_login=None, login_timeout_ms=None)` | `list[StepResult]` | runs the 5 readiness checks; raises a typed `LineError` on the first failure |
+| `list_rooms(unread_only=False, query=None)` | `Rooms` | `list[Room]`; `query` matches the room name substring |
+| `open_room(ref)` | `Room` | `ref` is an index, a `data-mid`, a name substring, or a `Room` |
+| `get_messages(room=None, limit=5, ...)` | `Messages` | `list[Message]`; date/time, sender, and keyword filters |
+| `unread_digest()` | `Report` | rooms with `unread > 0`, as room dicts |
+| `unread_full(date=None, limit_per_room=20)` | `Report` | unread rooms with their messages (`date=None` means today) |
+| `search_all(keyword, date_from=None, date_to=None, rooms=None, limit_per_room=100)` | `Report` | every room that matched, one room at a time |
+| `dump_page()` | `Dom` | raw chats DOM for selector tuning |
+| `dump_room(ref)` | `Dom` | opens the room and returns its DOM |
+| `probe_session()` | `Probe` | redacted storage probe (key names and lengths only) |
+| `clear_session(backup=True)` | `dict` | wipes the LINE session, keeps the extension |
+| `close()` | `None` | detaches CDP; Chrome keeps running |
+
+`get_messages` also accepts `date`, `date_from`, `date_to`, `time_from`, `time_to`, `sender`, `keyword`, `with_media`, and `scroll`.
+
+### Results and saving
+
+Queries never touch disk. They return a small result type that subclasses the plain builtin (`Rooms` and `Messages` are lists, `Report` is a list of dicts, `Probe` is a dict, `Dom` is a str) and adds `.save(path)`, which writes the file and returns the path. `Messages` also carries `.room` and a `.download_media(dir)` helper.
+
+```python
+rooms = line.list_rooms(unread_only=True)   # no I/O
+rooms.save("session/rooms.json")            # writes {"rooms": [...]}
+
+msgs = line.get_messages("Family", with_media=True)  # images in memory
+msgs = msgs.download_media("session/media")          # writes the image files
+msgs.save("session/messages.json")                   # writes room + fetched_at + messages
+```
+
+Upgrading from 1.x: the old `save_rooms`, `save_messages`, and `save_probe` methods are gone, and `get_messages` no longer takes `media_dir` or `include_media_data`. Call `.save(path)` on the result instead, and move image fetching to `with_media=True` plus `download_media(dir)`.
+
+## Recipes
+
+Filter by date and keyword, then count senders:
+
+```python
+from line_ext_msg import LineClient, sender_stats
+
+with LineClient(quiet=True) as line:
+    line.status()
+    msgs = line.get_messages("Work", date_from="2026-09-01", keyword="invoice")
+    for row in sender_stats(msgs):
+        print(row["sender"], row["count"])
+```
+
+Download image bubbles and embed them as data URIs (useful for AI pipelines):
+
+```python
+with LineClient(quiet=True) as line:
+    line.status()
+    msgs = line.get_messages("Family", limit=50, with_media=True)
+    msgs = msgs.download_media("media", include_data=True)
+    for m in msgs:
+        if m.type == "image":
+            print(m.media, len(m.media_data))  # local path and data URI
+```
+
+Save results to JSON (`.save` is the only step with side effects on disk):
+
+```python
+with LineClient(quiet=True) as line:
+    line.status()
+    rooms_path = line.list_rooms(unread_only=True).save("session/rooms.json")
+    msgs_path = line.get_messages("Family", limit=100).save("session/messages.json")
+    print(rooms_path, msgs_path)
+```
+
+Handle failures with typed errors:
+
+```python
+from line_ext_msg import LineClient, LineError, LoginRequired, RoomNotFound
+
+with LineClient(quiet=True) as line:
+    try:
+        line.status()
+        room = line.open_room("Family")
+    except LoginRequired:
+        ...   # not logged in; see Authentication and session
+    except RoomNotFound as e:
+        print(e.available)   # the room names that were visible
+    except LineError as e:
+        ...   # any other typed failure
+```
+
+## Authentication and session
+
+`status()` runs five checks (Chrome, CDP attach, extension, page ready, login) and raises a typed error on the first failure: `ChromeNotReady`, `AttachFailed`, `ExtensionMissing`, `AppNotReady`, `LoginRequired`, or `QrDialogFailed`.
+
+- With `quiet=True` (recommended for a service) it does not block: if no one is logged in it raises `LoginRequired` right away.
+- With `status(wait_for_login=True)` it shows the QR in a small Tk dialog on the machine, waits until you scan or close it, and asks for the PIN code on the phone when LINE requires it. Use `login_timeout_ms` to bound the wait.
+
+The dialog is currently the only login UI: there is no callback yet for an embedding app to fetch the QR image or the PIN and render it itself. A headless service should either keep a logged-in Chrome running, or run once interactively to log in and then reuse that instance.
+
+The LINE session is tied to the running Chrome process, not to disk. The token stays in Local Storage (`lcs_secure_<mid>`, about 3.2 KB), but the key that decrypts it lives in the extension's sandboxed `ltsmSandbox.html`, which has no persistent storage, so a fresh Chrome asks for the QR again. The library therefore never restarts a running Chrome just to match a preferred mode: a live instance is reused and stays logged in, so you scan the QR once per Chrome lifetime. Closing Chrome or rebooting requires a new scan. `clear_session()` wipes the session on purpose.
+
+## Logging
+
+The library emits nothing on import (it carries a `NullHandler`). To see progress and diagnostics, configure the package logger:
+
+```python
+import logging
+from line_ext_msg.output.logging import configure
+
+configure(logging.INFO)   # attaches a stderr handler to the "line_ext_msg" logger
+```
+
+Or attach your own handlers to the `line_ext_msg` logger. The CLI configures it for you and adds `--verbose` (DEBUG), `--quiet-log` (WARNING and above), `--log-level {debug,info,warning,error}`, and `--log-file PATH`. Results go to stdout; logs go to stderr.
+
+## Models and JSON
+
+`Room` (frozen dataclass): `index`, `id` (data-mid), `name`, `unread`, `last_preview`, `last_time`.
+
+`Message` (frozen dataclass): `id`, `date` (`YYYY-MM-DD`), `ts` (ISO 8601), `sender`, `from_me`, `type` (`text` / `sticker` / `image` / `system` / `file`), `text`, `read_count`, `media` (local path), `media_data` (data URI, opt-in).
+
+`StepResult` (frozen dataclass): `name`, `passed`, `detail`. Both models serialize with `dataclasses.asdict`.
+
+`Messages.save` writes this shape (room and `fetched_at` only when the result knows its room):
 
 ```json
 {
-  "room": { "index": 0, "id": "CXX...", "name": "ครอบครัว", "unread": 3,
-            "last_preview": "กินข้าวยัง", "last_time": "8:13 AM" },
+  "room": { "index": 0, "id": "CXX...", "name": "Family", "unread": 3,
+            "last_preview": "did you eat", "last_time": "8:13 AM" },
   "fetched_at": "2026-09-12T01:00:00+00:00",
   "messages": [
     { "id": "0178...", "date": "2026-09-12", "ts": "2026-09-12T08:13:00",
-      "sender": "แม่", "from_me": false, "type": "text",
-      "text": "กินข้าวยัง", "read_count": null }
+      "sender": "Mom", "from_me": false, "type": "text",
+      "text": "did you eat", "read_count": null }
   ]
 }
 ```
 
-## ข้อจำกัดที่ควรรู้
+`unread_digest`, `unread_full`, and `search_all` return a `Report` (a list of dicts: room dicts, and `{"room": ..., "messages": [...]}` for the latter two), not models.
 
-- รายชื่อห้องกับข้อความในห้องเป็น virtualized list โปรแกรมเลื่อนโหลดเพิ่มให้เองแบบมีเพดานเวลา (`LINE_EXT_MSG_ROOMS_SCROLL_MS`, `LINE_EXT_MSG_MSGS_SCROLL_MS`) ปิดได้ด้วย `--no-scroll-msgs` หรือตั้งค่าเป็น 0
-- ได้เฉพาะที่ UI แสดง ไม่มี API สถานะอ่านรายข้อความ
-- session เก็บในโปรไฟล์ debug และรอดข้ามการปิดเปิดทั่วไป ถ้าหมดอายุโปรแกรมจะเปิด headed ให้สแกน QR เอง ล้างเองได้ด้วย `--clear-session`
-- `from_me` เป็น heuristic (ไม่มี username = เราส่ง) ยังไม่ยืนยันด้วย dump ที่มีข้อความของตัวเอง
+## Settings
 
-## dev
+All knobs live in the frozen `Settings` dataclass and can be set in code or through environment variables.
+
+```python
+from line_ext_msg import LineClient, Settings
+
+settings = Settings(headless=True, qr_zoom=3, quiet=True)
+with LineClient(settings) as line:
+    ...
+```
+
+| Environment variable | Default | Meaning |
+|---|---|---|
+| `LINE_EXT_MSG_PROFILE` | `%LOCALAPPDATA%\line-chrome-debug` | isolated debug profile |
+| `LINE_EXT_MSG_PORT` | `9222` | CDP debug port |
+| `LINE_EXT_MSG_HEADLESS` | `1` | run Chrome without a window |
+| `LINE_EXT_MSG_QUIET` | off | do not wait, keep the checklist silent |
+| `LINE_EXT_MSG_QR_ZOOM` | `2` | QR dialog zoom (1-4) |
+| `LINE_EXT_MSG_DIALOG_TITLE` | `LINE` | window title and header text of the QR dialog |
+| `LINE_EXT_MSG_QR_READY_MS` | `20000` | how long to wait for the QR canvas |
+| `LINE_EXT_MSG_ROOMS_SCROLL_MS` | `4000` | room list scroll budget |
+| `LINE_EXT_MSG_MSGS_SCROLL_MS` | `8000` | message backfill scroll budget |
+| `LINE_EXT_MSG_LOGIN_WAIT_MS` | `300000` | login wait for the headed fallback |
+| `LINE_EXT_MSG_READY_MS` | `30000` | app render timeout |
+| `LINE_EXT_MSG_SELECTOR_MS` | `15000` | selector wait timeout |
+| `LINE_EXT_MSG_OPEN_MS` | `3000` | fallback wait after opening a room |
+| `LINE_EXT_MSG_STOP_GRACEFUL_MS` | `3000` | how long a graceful Chrome close may take before the force kill |
+| `LINE_EXT_MSG_READY_SETTLE_MS` | `200` | extra settle after the app looks ready |
+
+## CLI
+
+The same client is exposed as a thin CLI. Results print to stdout and progress goes to stderr.
 
 ```powershell
-uv sync
+line-ext-msg                        # pick a room in the terminal, print to screen only
+line-ext-msg --save                 # also write session/rooms.json and session/messages_<index>.json
+line-ext-msg --unread               # only rooms with unread messages
+line-ext-msg --search "invoice"     # search every room and summarise the hits
+line-ext-msg --status               # check Chrome and login, then stop (keepalive)
+line-ext-msg --verbose              # DEBUG logs
+line-ext-msg --help                 # full flag list
+```
+
+On first run the CLI starts Chrome on the isolated profile. If the LINE extension is missing it opens a headed window at the Web Store, waits until the extension is installed, then returns to headless by itself. When a QR scan is needed it captures the QR and shows it in a centered `LINE` dialog (zoom via `LINE_EXT_MSG_QR_ZOOM`), waits until you scan or close it, and shows the PIN code when LINE asks for one. `--clear-session` wipes the session (asks for confirmation).
+
+## Limitations
+
+- Room and message lists are virtualized; the library scrolls to load more within a time budget. Disable with `scroll=False` or set the scroll budget to 0.
+- Only what the UI renders is readable; there is no per-message read API.
+- `unread_digest`, `unread_full`, and `search_all` return a `Report` (list of dicts), not models.
+- `download_media` only writes what `with_media=True` already fetched; it does not re-open the room.
+- The QR dialog is the only login UI; there is no callback for an app to render the QR itself.
+- Debug Chrome starts with `--disable-notifications` and `--hide-crash-restore-bubble`, so web and push notifications stay off and the restore bubble never appears after a force kill. Toasts an extension raises through `chrome.notifications` are not covered.
+- The session is tied to the running Chrome process, so keep Chrome alive to avoid scanning again.
+- `from_me` is a heuristic (no username means your own message) and is not yet confirmed with a dump that contains your own messages.
+- Windows only for now: Chrome discovery and process control use Windows paths and PowerShell.
+
+## Project layout
+
+The package is split into layers with one-way imports and no cycles.
+
+```
+src/line_ext_msg/
+  config/    settings, constants, and default paths (no I/O)
+  domain/    models, typed errors, pure filters (no browser)
+  browser/   everything that touches Chrome/Playwright: process, CDP, login, mode, JS
+  scraper/   DOM to models: scroll, extract, media, rooms, messages
+  output/    JSON and text storage, checklist logger, logging setup
+  results.py savable query results: Rooms, Messages, Report, Probe, Dom
+  service/   LineClient facade, readiness, diagnostics, QR dialog
+  cli.py     entry point
+```
+
+Each layer may import only the ones listed below. `domain` is the shared
+vocabulary (models and typed errors), so every layer may import it.
+
+| Layer | May import |
+| --- | --- |
+| `config` | nothing |
+| `domain` | nothing |
+| `output` | `config`, `domain` |
+| `results` | `domain`, `output` |
+| `browser` | `config`, `domain` |
+| `scraper` | `config`, `domain`, `browser`, `results` |
+| `service` | every layer above |
+| `cli` | `service`, `config`, `domain`, `output` |
+
+`results` is the savable result layer, so `scraper` reaches `output` (the file
+writers) through it.
+
+The public API is only `line_ext_msg/__init__.py` (`LineClient`, `Room`, `Message`, `StepResult`, `Rooms`, `Messages`, `Report`, `Probe`, `Dom`, `Settings`, `sender_stats`, and the typed errors). Subpackages are implementation details and may change without notice.
+
+## Development
+
+```powershell
+uv sync --extra dev
+uv run ruff check src tests
+uv run mypy
 uv run pytest
 uv build
 ```
 
-## ถ้าอ่านห้องไม่ได้ (LINE อัปเดต UI)
+## Troubleshooting
+
+If rooms cannot be read after a LINE UI update, save the DOM and send it to tune the selectors:
 
 ```powershell
-line-ext-msg --dump              # DOM หน้า chats → session/dumps/line_dom.html
-line-ext-msg --dump-room 0       # DOM ในห้อง → session/dumps/line_room.html
-# ส่งไฟล์มาเพื่อจูน selector ใน src/line_ext_msg/settings.py
+line-ext-msg --dump             # chats DOM -> session/dumps/line_dom.html
+line-ext-msg --dump-room 0      # room DOM  -> session/dumps/line_room.html
+# selectors live in src/line_ext_msg/config/selectors.py
 ```
+
+Add `--debug-qr` when the QR capture fails; it logs redacted login-page diagnostics.
