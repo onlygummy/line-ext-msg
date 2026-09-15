@@ -98,6 +98,52 @@ class _Browser:
             raise RuntimeError("beforeunload blocked close")
 
 
+class _CdpSession:
+    def __init__(self, log):
+        self.log = log
+
+    def send(self, method):
+        self.log.append(method)
+
+
+class _CdpBrowser:
+    """Browser with a CDP session; close() must stay unused on this path."""
+
+    def __init__(self):
+        self.sent = []
+        self.closed = 0
+
+    def new_browser_cdp_session(self):
+        return _CdpSession(self.sent)
+
+    def close(self):
+        self.closed += 1
+
+
+def test_close_browser_prefers_the_cdp_command():
+    browser = _CdpBrowser()
+    assert mode._close_browser(browser) is True
+    assert browser.sent == ["Browser.close"]
+    assert browser.closed == 0
+
+
+def test_close_browser_falls_back_to_playwright_close():
+    browser = _Browser()
+    assert mode._close_browser(browser) is True
+    assert browser.closed == 1
+
+
+def test_close_browser_reports_failure():
+    class _Dead:
+        def new_browser_cdp_session(self):
+            raise RuntimeError("no cdp session")
+
+        def close(self):
+            raise RuntimeError("already gone")
+
+    assert mode._close_browser(_Dead()) is False
+
+
 def test_stop_graceful_avoids_force_kill(monkeypatch):
     monkeypatch.setattr(mode.chrome, "is_debug_ready", lambda s, timeout_sec=2: True)
     killed = []
@@ -107,6 +153,29 @@ def test_stop_graceful_avoids_force_kill(monkeypatch):
     assert out == "graceful"
     assert browser.closed == 1
     assert killed == []
+
+
+def test_stop_graceful_via_the_cdp_command(monkeypatch):
+    monkeypatch.setattr(mode.chrome, "is_debug_ready", lambda s, timeout_sec=2: True)
+    killed = []
+    monkeypatch.setattr(mode.process, "terminate_debug_chrome", lambda s: killed.append(True))
+    browser = _CdpBrowser()
+    out = mode.stop(make_settings(), browser, wait_port=lambda s, t: True)
+    assert out == "graceful"
+    assert browser.sent == ["Browser.close"]
+    assert killed == []
+
+
+def test_stop_honours_the_configured_graceful_timeout(monkeypatch):
+    monkeypatch.setattr(mode.chrome, "is_debug_ready", lambda s, timeout_sec=2: True)
+    waits = []
+
+    def fake_wait(settings, timeout_s):
+        waits.append(timeout_s)
+        return True
+
+    mode.stop(make_settings(stop_graceful_ms=1500), _Browser(), wait_port=fake_wait)
+    assert waits == [1.5]
 
 
 def test_stop_falls_back_to_force_kill(monkeypatch):

@@ -22,6 +22,10 @@ ABSENT = "absent"
 HEADLESS = "headless"
 HEADED = "headed"
 
+# After the force kill, how long to wait for the port to drop. taskkill /T
+# takes the whole tree, so this only absorbs the OS teardown.
+FORCE_WAIT_S = 3.0
+
 
 def mode_of(settings: Settings, probe=None) -> str:
     """Current debug Chrome mode: absent, headless, or headed."""
@@ -40,14 +44,34 @@ def _wait_port_down(settings: Settings, timeout_s: float) -> bool:
     """Wait until the CDP endpoint stops answering, bounded by timeout."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        if not chrome.is_debug_ready(settings, timeout_sec=1):
+        # Bypass the version cache: this loop must see the port die at once.
+        if not chrome.is_debug_ready(settings, timeout_sec=1, use_cache=False):
             return True
-        time.sleep(0.5)
-    return not chrome.is_debug_ready(settings, timeout_sec=1)
+        time.sleep(0.2)
+    return not chrome.is_debug_ready(settings, timeout_sec=1, use_cache=False)
+
+
+def _close_browser(browser) -> bool:
+    """Ask Chrome to exit; True when a close was dispatched.
+
+    A browser obtained from connect_over_cdp ignores Playwright's
+    browser.close(), which only disconnects the client, so prefer the CDP
+    Browser.close command: it makes the process exit and flush its session.
+    """
+    try:
+        browser.new_browser_cdp_session().send("Browser.close")
+        return True
+    except Exception as e:
+        logger.debug("CDP Browser.close failed: %s", e)
+    try:
+        browser.close()
+        return True
+    except Exception:
+        return False
 
 
 def stop(settings: Settings, browser=None, on_event=None,
-         graceful_timeout_s: float = 8.0, wait_port=None) -> str:
+         graceful_timeout_s: float | None = None, wait_port=None) -> str:
     """Stop debug Chrome: graceful CDP close first, force kill as fallback.
 
     Returns 'absent' when it was already down, 'graceful' when the CDP
@@ -55,23 +79,25 @@ def stop(settings: Settings, browser=None, on_event=None,
     """
     is_ready = chrome.is_debug_ready
     wait = wait_port or _wait_port_down
+    if graceful_timeout_s is None:
+        graceful_timeout_s = settings.stop_graceful_ms / 1000
     if not is_ready(settings):
         return ABSENT
-    graceful = False
-    if browser is not None:
-        try:
-            browser.close()
-            graceful = True
-        except Exception:
-            graceful = False
+    graceful = browser is not None and _close_browser(browser)
+    # The instance is on its way out: drop any cached version payload so the
+    # next probe reads the real state instead of the dying one.
+    chrome.invalidate(settings)
     if graceful and wait(settings, graceful_timeout_s):
         logger.info("Chrome closed gracefully")
+        # Drop the recorded PID now: a stale one could later name a reused
+        # process id and get that unrelated process killed.
+        process.clear_pid(settings)
         return "graceful"
     if on_event and browser is not None and not graceful:
         on_event("graceful close failed, using force kill")
     logger.warning("force killing debug Chrome")
     process.terminate_debug_chrome(settings)
-    wait(settings, 5.0)
+    wait(settings, FORCE_WAIT_S)
     return "force"
 
 

@@ -33,6 +33,14 @@ class Settings:
     rooms_scroll_ms: int = field(default_factory=lambda: _env_int("LINE_EXT_MSG_ROOMS_SCROLL_MS", 4000))
     messages_scroll_ms: int = field(default_factory=lambda: _env_int("LINE_EXT_MSG_MSGS_SCROLL_MS", 8000))
     open_room_wait_ms: int = field(default_factory=lambda: _env_int("LINE_EXT_MSG_OPEN_MS", 3000))
+    # How long a graceful CDP close may take before the force kill fallback.
+    stop_graceful_ms: int = field(
+        default_factory=lambda: _env_int("LINE_EXT_MSG_STOP_GRACEFUL_MS", 3000)
+    )
+    # Extra settle after the app looks ready, to let React finish painting.
+    ready_settle_ms: int = field(
+        default_factory=lambda: _env_int("LINE_EXT_MSG_READY_SETTLE_MS", 200)
+    )
     # QR dialog zoom. The QR canvas is small, so 2x is readable without the
     # blockiness of a larger nearest-neighbor zoom.
     qr_zoom: int = field(default_factory=lambda: _env_int("LINE_EXT_MSG_QR_ZOOM", 2))

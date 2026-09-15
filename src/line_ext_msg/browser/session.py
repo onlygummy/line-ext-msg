@@ -196,6 +196,12 @@ def ensure_line_page(context: BrowserContext, settings: Settings, browser: Brows
     return page
 
 
+def _one_line(text) -> str:
+    """First line of a Playwright error; its call log spans many lines."""
+    lines = str(text).splitlines()
+    return lines[0] if lines else ""
+
+
 def check_installed(context: BrowserContext, settings: Settings, browser: Browser | None = None) -> tuple[bool, str]:
     """3-layer install check reusing the existing tab. Returns (installed, detail)."""
     found_disk = is_on_disk(settings)
@@ -211,7 +217,12 @@ def check_installed(context: BrowserContext, settings: Settings, browser: Browse
                 return True, detail
             return found_disk, detail
         except Exception as e:
-            return found_disk, f"could not read the reused tab: {e}"
+            return found_disk, f"could not read the reused tab: {_one_line(e)}"
+    if found_disk:
+        # The files are already there, so treat the install as done. A probe
+        # tab would only get blocked while a freshly started Chrome finishes
+        # registering the extension; step [4/5] exercises the real load.
+        return True, "found_on_disk=True"
     probe = context.new_page()
     try:
         probe.goto(settings.extension_url, timeout=10000)
@@ -226,7 +237,7 @@ def check_installed(context: BrowserContext, settings: Settings, browser: Browse
             return True, detail
         return found_disk, detail
     except Exception as e:
-        return found_disk, f"probe failed: {e} found_on_disk={found_disk}"
+        return found_disk, f"probe failed: {_one_line(e)} found_on_disk={found_disk}"
     finally:
         probe.close()
 
@@ -244,7 +255,8 @@ def wait_ready(page: Page, settings: Settings) -> str:
         except Exception:
             return "timeout"
     # Give the chat list (or login screen) a moment to render so step [5/5]
-    # does not burn its whole poll while rows are already on the way.
+    # does not burn its whole poll while rows are already on the way. The
+    # settle window is env-tunable because slower machines need more of it.
     try:
         page.wait_for_selector(
             f"{SELECTORS['room_item']}, [class*='loginPage']",
@@ -254,7 +266,7 @@ def wait_ready(page: Page, settings: Settings) -> str:
     except Exception:
         pass
     try:
-        page.wait_for_timeout(800)
+        page.wait_for_timeout(settings.ready_settle_ms)
     except Exception:
         pass
     logger.debug("page ready")

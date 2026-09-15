@@ -185,6 +185,8 @@ with LineClient(settings) as line:
 | `LINE_EXT_MSG_READY_MS` | `30000` | app render timeout |
 | `LINE_EXT_MSG_SELECTOR_MS` | `15000` | selector wait timeout |
 | `LINE_EXT_MSG_OPEN_MS` | `3000` | fallback wait after opening a room |
+| `LINE_EXT_MSG_STOP_GRACEFUL_MS` | `3000` | how long a graceful Chrome close may take before the force kill |
+| `LINE_EXT_MSG_READY_SETTLE_MS` | `200` | extra settle after the app looks ready |
 
 ## CLI
 

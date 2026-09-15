@@ -18,6 +18,10 @@ ROOM_DUMP = f"{DUMPS_DIR}/line_room.html"
 QR_PNG = f"{SESSION_DIR}/qr.png"
 QR_STATUS = f"{SESSION_DIR}/qr_status.json"
 
+# PID of the debug Chrome we started, so a stop can taskkill the tree once
+# instead of enumerating processes through PowerShell.
+CHROME_PID = f"{SESSION_DIR}/chrome.pid"
+
 
 def messages_json(index: int) -> str:
     """Path of the per-room messages file for a room index."""

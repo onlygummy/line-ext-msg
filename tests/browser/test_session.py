@@ -91,3 +91,72 @@ def test_close_extension_tabs_closes_only_extension_pages(monkeypatch):
     monkeypatch.setattr(session.urllib.request, "urlopen", fake_urlopen)
     session.close_extension_tabs(settings)
     assert closed == [f"{settings.cdp_endpoint}/json/close/a"]
+
+
+class _ReadyPage:
+    """Minimal page recording the settle wait the caller applied."""
+
+    def __init__(self):
+        self.settle_waits = []
+
+    def wait_for_function(self, *_a, **_k):
+        pass
+
+    def wait_for_selector(self, *_a, **_k):
+        pass
+
+    def wait_for_timeout(self, ms):
+        self.settle_waits.append(ms)
+
+
+def test_wait_ready_uses_the_configured_settle_window():
+    page = _ReadyPage()
+    assert session.wait_ready(page, make_settings(ready_settle_ms=150)) == "ready"
+    assert page.settle_waits == [150]
+
+
+class _NoProbeContext:
+    def new_page(self):
+        raise AssertionError("no probe tab when the files are already on disk")
+
+
+def test_check_installed_skips_probe_when_on_disk(monkeypatch):
+    monkeypatch.setattr(session, "is_on_disk", lambda settings: True)
+    monkeypatch.setattr(session, "find_line_page", lambda target, ext_id: None)
+    assert session.check_installed(_NoProbeContext(), make_settings()) == (
+        True,
+        "found_on_disk=True",
+    )
+
+
+class _BlockedPage:
+    def __init__(self):
+        self.closed = 0
+
+    def goto(self, url, timeout=0):
+        raise RuntimeError(
+            "Page.goto: net::ERR_BLOCKED_BY_CLIENT at chrome-extension://x\n"
+            "Call log:\n  - navigating to the extension page"
+        )
+
+    def close(self):
+        self.closed += 1
+
+
+class _BlockedContext:
+    def __init__(self, page):
+        self._page = page
+
+    def new_page(self):
+        return self._page
+
+
+def test_check_installed_cleans_the_blocked_probe_message(monkeypatch):
+    monkeypatch.setattr(session, "is_on_disk", lambda settings: False)
+    monkeypatch.setattr(session, "find_line_page", lambda target, ext_id: None)
+    page = _BlockedPage()
+    installed, detail = session.check_installed(_BlockedContext(page), make_settings())
+    assert installed is False
+    assert detail.startswith("probe failed: ")
+    assert "\n" not in detail, "the Playwright call log must not leak into the detail"
+    assert page.closed == 1

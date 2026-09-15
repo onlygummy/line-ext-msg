@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Faster Chrome lifecycle: the debug PID is recorded at launch and a stop force-kills that whole tree with a single `taskkill /T` instead of enumerating every process through PowerShell; the start poll backs off after 2s and passes `--no-first-run --no-default-browser-check`; the graceful-close wait drops from 8s to 3s (`LINE_EXT_MSG_STOP_GRACEFUL_MS`); the post-switch settle wait drops from 800ms to 200ms (`LINE_EXT_MSG_READY_SETTLE_MS`); and repeated `/json/version` reads within one transition share a 0.3s cache
+- Mode switches now close Chrome for real: `mode.stop` sends the CDP `Browser.close` command over the existing connection, because Playwright's `browser.close()` on a browser from `connect_over_cdp` only detaches. Graceful shutdown used to be a fixed wait that always ended in a force kill
+- Quieter install check: when the extension files are already on disk `check_installed` reports `found_on_disk=True` without opening a probe tab, and a blocked probe (`net::ERR_BLOCKED_BY_CLIENT`) logs as one line instead of the full Playwright call log. The real load is still exercised by step `[4/5]`
+- Fix: `ensure_chrome` reuses a running debug Chrome whatever its mode, so `--dump` and `--dump-room` no longer fail with `ChromeNotReady` when a headed instance (for example after a QR login) is already up
 - Layered package: `config`, `domain`, `browser`, `scraper`, `output`, `service`. Imports flow one way with no cycles, and only `line_ext_msg/__init__.py` exposes the public API
 - Split the two god modules: `messages.py` (731 lines) became `scraper/{messages,scroll,extract,media}.py`, and `client.py` (417 lines) became `service/{client,readiness,diagnostics,maintenance}.py`
 - All `page.evaluate` snippets now live in `browser/js.py` and take a single args object; a test scans that module to keep the single-argument rule
