@@ -34,18 +34,22 @@ from . import qr
 TOTAL_STEPS = 5
 
 
-def switch_mode(client, headless: bool) -> None:
+def switch_mode(client, headless: bool, open_page: bool = True) -> None:
     """Converge Chrome to the wanted mode and reattach the LINE page.
 
     Only safe when no login must survive: a restart drops the in-memory
-    session and forces another QR scan.
+    session and forces another QR scan. open_page=False skips navigating to
+    the extension page, for switches made before the extension is installed.
     """
     settings = dataclasses.replace(client.settings, headless=headless)
     mode.converge(settings, browser=client._browser)
     client.close()  # stop Playwright; Chrome itself stays up
     client._pw, client._browser, client._context = session.connect(settings)
-    client._page = session.ensure_line_page(client._context, settings, client._browser)
-    session.wait_ready(client._page, settings)
+    if open_page:
+        client._page = session.ensure_line_page(client._context, settings, client._browser)
+        session.wait_ready(client._page, settings)
+    else:
+        client._page = None
     client.settings = settings
 
 
@@ -76,11 +80,31 @@ def _qr_debug(page) -> dict:
     try:
         data = page.evaluate(
             js.QR_DEBUG,
-            {"sel": SELECTORS["login_qr"], "pageSel": SELECTORS["login_page"]},
+            {
+                "sel": SELECTORS["login_qr"],
+                "pageSel": SELECTORS["login_page"],
+                "pinSel": SELECTORS["login_pin"],
+            },
         )
     except Exception as e:
         return {"error": str(e)[:120]}
     return data if isinstance(data, dict) else {}
+
+
+def _login_pin(page) -> tuple[str, str]:
+    """PIN shown after a QR scan and its instruction text, ('', '') when none."""
+    try:
+        data = page.evaluate(js.LOGIN_PIN, {
+            "pinSel": SELECTORS["login_pin"],
+            "descSel": SELECTORS["login_pin_desc"],
+        })
+    except Exception:
+        return "", ""
+    if not isinstance(data, dict):
+        return "", ""
+    pin = data.get("pin") or ""
+    desc = data.get("desc") or ""
+    return (pin if isinstance(pin, str) else "", desc if isinstance(desc, str) else "")
 
 
 def _wait_for_qr(page, timeout_ms: int) -> str:
@@ -151,6 +175,8 @@ def _qr_login(client) -> str:
                 break
             if not dialog.alive():
                 break
+            pin, desc = _login_pin(page)
+            dialog.set_pin(pin, desc)
             new_uri = _qr_data(page)
             if new_uri:
                 dialog.update(new_uri)
@@ -174,6 +200,43 @@ def _print_keep_open(client) -> None:
         "(ปิด Chrome เมื่อไรต้องสแกนใหม่)",
         flush=True,
     )
+
+
+def _install_extension(client, settings: Settings, detail: str) -> tuple[bool, str]:
+    """Pop a headed window, open the Web Store, and wait for the install.
+
+    Waits until the extension folder appears on disk or the user closes
+    Chrome. Once installed it always returns to headless, then reports the
+    fresh check result. Returns (installed, detail).
+    """
+    if mode.mode_of(settings) != mode.HEADED:
+        if not settings.quiet:
+            print("ไม่พบ Extension เปิดหน้าต่าง Chrome เพื่อติดตั้ง...", flush=True)
+        # Do not open the LINE page here: without the extension it is a
+        # blocked tab that only clutters the window.
+        switch_mode(client, headless=False, open_page=False)
+    session.close_startup_tabs(settings)
+    session.close_extension_tabs(settings)
+    try:
+        session.open_store_page(client._context, settings)
+    except Exception as e:
+        if not settings.quiet:
+            print(f"เปิดหน้าเว็บสโตร์ไม่สำเร็จ: {e}", flush=True)
+    if not settings.quiet:
+        print("เปิดแท็บเว็บสโตร์แล้ว ติดตั้ง LINE แล้วโปรแกรมจะตรวจต่ออัตโนมัติ", flush=True)
+        print("ปิดหน้าต่าง Chrome เพื่อยกเลิก", flush=True)
+
+    # No timeout on purpose: stop by installing the extension, closing
+    # Chrome, or pressing Ctrl+C.
+    while not session.is_on_disk(settings):
+        if not chrome.is_debug_ready(settings):
+            return False, "ยกเลิก: ปิดหน้าต่าง Chrome ก่อนติดตั้งเสร็จ"
+        time.sleep(2)
+
+    if not settings.quiet:
+        print("ติดตั้งสำเร็จ กลับสู่โหมด headless...", flush=True)
+    switch_mode(client, headless=True)
+    return session.check_installed(client._context, settings, client._browser)
 
 
 def run(client, wait_for_login: bool | None = None,
@@ -216,9 +279,10 @@ def run(client, wait_for_login: bool | None = None,
     record("เกาะเบราว์เซอร์", True)
 
     installed, detail = session.check_installed(client._context, settings, client._browser)
+    if not installed:
+        installed, detail = _install_extension(client, settings, detail)
     if not record("Extension ติดตั้ง", installed,
                   detail=detail, hint=f"ติดตั้งเองจาก: {settings.webstore_url}").passed:
-        session.open_store_page(client._context, settings)
         steps.skip_rest("รอติดตั้งก่อน")
         raise ExtensionMissing(f"ติดตั้งเองจาก: {settings.webstore_url}")
 

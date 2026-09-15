@@ -64,6 +64,8 @@ def close_startup_tabs(settings: Settings) -> None:
         "chrome://new-tab-page",
         "chrome-untrusted://new-tab-page",
         "about:blank",
+        # Blocked chrome-extension:// loads (e.g. before install) land here.
+        "chrome-error://",
     )
     try:
         with urllib.request.urlopen(f"{settings.cdp_endpoint}/json/list", timeout=3) as res:
@@ -106,6 +108,32 @@ def close_duplicate_line_targets(settings: Settings) -> None:
                 continue
 
 
+def close_extension_tabs(settings: Settings) -> None:
+    """Close every tab pointing at the extension.
+
+    Only call this when the extension is missing: those tabs are blocked
+    loads, and closing them keeps only the Web Store page the install flow
+    opened.
+    """
+    try:
+        with urllib.request.urlopen(f"{settings.cdp_endpoint}/json/list", timeout=3) as res:
+            targets = json.loads(res.read().decode("utf-8", errors="ignore"))
+    except Exception:
+        return
+    if not isinstance(targets, list):
+        return
+    for t in targets:
+        if not isinstance(t, dict) or t.get("type") != "page":
+            continue
+        if settings.extension_id in (t.get("url") or "") and t.get("id"):
+            try:
+                urllib.request.urlopen(
+                    f"{settings.cdp_endpoint}/json/close/{t['id']}", timeout=3
+                ).read()
+            except Exception:
+                continue
+
+
 def goto_chats(page: Page, settings: Settings) -> None:
     """Route the LINE tab to #/chats (direct URL, fallback: nav click)."""
     try:
@@ -143,7 +171,13 @@ def ensure_line_page(context: BrowserContext, settings: Settings, browser: Brows
         goto_chats(page, settings)
         return page
     page = context.new_page()
-    page.goto(settings.chats_url)
+    try:
+        page.goto(settings.chats_url)
+    except Exception:
+        # The extension may not be installed yet and Chrome blocks the
+        # chrome-extension:// URL. The readiness step handles that case, so
+        # do not crash the whole flow here.
+        pass
     try:
         page.bring_to_front()
     except Exception:
@@ -219,7 +253,12 @@ def wait_ready(page: Page, settings: Settings) -> str:
     return "ready"
 
 
-def open_store_page(context: BrowserContext, settings: Settings) -> None:
-    """Open the Web Store page so the user can install manually."""
+def open_store_page(context: BrowserContext, settings: Settings) -> Page:
+    """Open the Web Store page and bring it forward so the user can install."""
     tab = context.new_page()
     tab.goto(settings.webstore_url)
+    try:
+        tab.bring_to_front()
+    except Exception:
+        pass
+    return tab

@@ -31,4 +31,7 @@ SELECTORS = {
     # Login page: the page container and the QR sub-area (extension v3.7.2).
     "login_page": "[class*='loginPage']",
     "login_qr": "[class*='login_qr']",
+    # PIN modal shown after the QR is scanned: the code to type on the phone.
+    "login_pin": "[class*='pinCodeModal-module__pincode']",
+    "login_pin_desc": "[class*='pinCodeModal-module__description']",
 }

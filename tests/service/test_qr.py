@@ -76,6 +76,15 @@ def test_open_raises_when_spawn_fails(tmp_path, monkeypatch):
     assert os.path.exists(dialog.png)
 
 
+def test_set_pin_writes_status(tmp_path):
+    status = str(tmp_path / "status.json")
+    dialog = qr.QrDialog(png=str(tmp_path / "qr.png"), status=status)
+    dialog.set_pin("5239", "enter on phone")
+    with open(status, encoding="utf-8") as f:
+        data = json.load(f)
+    assert data == {"state": "waiting", "pin": "5239", "desc": "enter on phone"}
+
+
 def test_clamp_zoom_bounds():
     assert qr.clamp_zoom(2) == 2
     assert qr.clamp_zoom(0) == qr.MIN_ZOOM

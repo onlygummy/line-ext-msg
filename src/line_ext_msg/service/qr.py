@@ -52,11 +52,13 @@ def _atomic_write(path: str, data: bytes) -> None:
     os.replace(tmp, path)
 
 
-def _write_status(path: str, state: str) -> None:
+def _write_status(path: str, state: str, **extra) -> None:
+    payload = {"state": state}
+    payload.update(extra)
     tmp = f"{path}.tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"state": state}, f)
+            json.dump(payload, f)
         os.replace(tmp, path)
     except OSError:
         pass
@@ -80,6 +82,7 @@ class QrDialog:
         self.zoom = clamp_zoom(zoom)
         self._proc: subprocess.Popen | None = None
         self._last = ""
+        self._pin: tuple[str, str] | None = None
 
     def alive(self) -> bool:
         """True while the viewer process is still running."""
@@ -96,10 +99,17 @@ class QrDialog:
         _atomic_write(self.png, data)
         return True
 
+    def set_pin(self, pin: str, desc: str = "") -> None:
+        """Update the PIN step shown in the dialog (empty when back to QR)."""
+        if (pin, desc) == self._pin:
+            return
+        self._pin = (pin, desc)
+        _write_status(self.status, "waiting", pin=pin, desc=desc)
+
     def open(self, data_uri: str) -> None:
         """Write the first QR image, then launch the viewer process."""
         self.update(data_uri)
-        _write_status(self.status, "waiting")
+        _write_status(self.status, "waiting", pin="", desc="")
         try:
             self._proc = subprocess.Popen(
                 [sys.executable, "-m", "line_ext_msg.service.qr_view",

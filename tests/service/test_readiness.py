@@ -37,6 +37,16 @@ class _DebugPage(_Page):
         return {"hasQrRoot": True, "qrCalvases": [[200, 200]], "qrDataLen": 5000}
 
 
+class _PinPage(_Page):
+    def evaluate(self, _js, _arg=None):
+        return {"pin": "5239", "desc": "enter on phone"}
+
+
+class _BadPayloadPage(_Page):
+    def evaluate(self, _js, _arg=None):
+        return "nope"
+
+
 class _Dialog:
     """Replaces readiness.qr.QrDialog; records the lifecycle calls."""
 
@@ -48,6 +58,7 @@ class _Dialog:
         self.zoom = zoom
         self.opened = None
         self.updated = []
+        self.pins = []
         self.finished = None
         self._alive = True
         _Dialog.instances.append(self)
@@ -58,6 +69,9 @@ class _Dialog:
     def update(self, data_uri):
         self.updated.append(data_uri)
         return True
+
+    def set_pin(self, pin, desc=""):
+        self.pins.append((pin, desc))
 
     def alive(self):
         return self._alive
@@ -70,6 +84,8 @@ class _Client:
     def __init__(self, page, settings):
         self._page = page
         self.settings = settings
+        self._context = None
+        self._browser = None
 
 
 @pytest.fixture(autouse=True)
@@ -78,6 +94,8 @@ def _patch_env(monkeypatch):
     monkeypatch.setattr(readiness.qr, "QrDialog", _Dialog)
     # The reload path calls into the real readiness probe; stub it out.
     monkeypatch.setattr(readiness.session, "wait_ready", lambda page, settings: "ready")
+    monkeypatch.setattr(readiness.session, "close_startup_tabs", lambda settings: None)
+    monkeypatch.setattr(readiness.time, "sleep", lambda _s: None)
     yield
 
 
@@ -100,6 +118,31 @@ def test_qr_debug_returns_dict():
 
 def test_qr_debug_empty_on_bad_payload():
     assert readiness._qr_debug(_Page()) == {}
+
+
+def test_login_pin_reads_fields():
+    assert readiness._login_pin(_PinPage()) == ("5239", "enter on phone")
+
+
+def test_login_pin_empty_on_bad_payload():
+    assert readiness._login_pin(_BadPayloadPage()) == ("", "")
+
+
+def test_qr_login_passes_pin_to_dialog(monkeypatch):
+    calls = {"n": 0}
+
+    def fake_pin(page):
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            return ("5239", "enter on phone")
+        return ("", "")
+
+    monkeypatch.setattr(readiness, "_login_pin", fake_pin)
+    monkeypatch.setattr(readiness.auth, "check_login",
+                        lambda page, timeout_ms=0: (calls["n"] >= 3, "chat"))
+    client = _Client(_Page(), make_settings())
+    assert readiness._qr_login(client) == "ok"
+    assert ("5239", "enter on phone") in _Dialog.instances[-1].pins
 
 
 def test_wait_for_qr_returns_uri():
@@ -177,6 +220,53 @@ def test_qr_login_raises_when_dialog_cannot_open(monkeypatch):
     with pytest.raises(QrDialogFailed):
         readiness._qr_login(client)
     assert _Dialog.instances[-1].finished == ("cancel", True)
+
+
+def test_install_extension_success_returns_to_headless(monkeypatch):
+    calls = []
+    monkeypatch.setattr(readiness.mode, "mode_of", lambda s: readiness.mode.HEADLESS)
+    monkeypatch.setattr(readiness, "switch_mode",
+                        lambda c, headless, open_page=True: calls.append(headless))
+    monkeypatch.setattr(readiness.session, "open_store_page", lambda ctx, s: object())
+    monkeypatch.setattr(readiness.session, "is_on_disk", lambda s: True)
+    monkeypatch.setattr(readiness.chrome, "is_debug_ready", lambda s, timeout_sec=2: True)
+    monkeypatch.setattr(readiness.session, "check_installed",
+                        lambda ctx, s, b: (True, "found_on_disk=True"))
+    client = _Client(_Page(), make_settings())
+    installed, detail = readiness._install_extension(client, client.settings, "x")
+    assert installed is True
+    assert detail == "found_on_disk=True"
+    assert calls == [False, True]  # headed to install, then back to headless
+
+
+def test_install_extension_cancel_when_chrome_closed(monkeypatch):
+    calls = []
+    monkeypatch.setattr(readiness.mode, "mode_of", lambda s: readiness.mode.HEADLESS)
+    monkeypatch.setattr(readiness, "switch_mode",
+                        lambda c, headless, open_page=True: calls.append(headless))
+    monkeypatch.setattr(readiness.session, "open_store_page", lambda ctx, s: object())
+    monkeypatch.setattr(readiness.session, "is_on_disk", lambda s: False)
+    monkeypatch.setattr(readiness.chrome, "is_debug_ready", lambda s, timeout_sec=2: False)
+    client = _Client(_Page(), make_settings())
+    installed, detail = readiness._install_extension(client, client.settings, "x")
+    assert installed is False
+    assert "ยกเลิก" in detail
+    assert calls == [False]  # headed only, never switched back
+
+
+def test_install_extension_already_headed(monkeypatch):
+    calls = []
+    monkeypatch.setattr(readiness.mode, "mode_of", lambda s: readiness.mode.HEADED)
+    monkeypatch.setattr(readiness, "switch_mode",
+                        lambda c, headless, open_page=True: calls.append(headless))
+    monkeypatch.setattr(readiness.session, "open_store_page", lambda ctx, s: object())
+    monkeypatch.setattr(readiness.session, "is_on_disk", lambda s: True)
+    monkeypatch.setattr(readiness.chrome, "is_debug_ready", lambda s, timeout_sec=2: True)
+    monkeypatch.setattr(readiness.session, "check_installed", lambda ctx, s, b: (True, "ok"))
+    client = _Client(_Page(), make_settings(headless=False))
+    installed, _ = readiness._install_extension(client, client.settings, "x")
+    assert installed is True
+    assert calls == [True]  # no headed switch, only back to headless
 
 
 def test_ensure_headed_noop_when_already_headed(monkeypatch):

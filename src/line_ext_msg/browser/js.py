@@ -246,6 +246,18 @@ QR_DATA_URL = """(args) => {
     } catch (e) { return ''; }
 }"""
 
+# PIN step after a QR scan: the code the user types into the LINE app on
+# the phone, plus its instruction text. Returns {pin, desc}.
+LOGIN_PIN = """(args) => {
+    const text = (sel) => {
+        try {
+            const el = document.querySelector(sel);
+            return el ? (el.textContent || '').trim() : '';
+        } catch (e) { return ''; }
+    };
+    return {pin: text(args.pinSel), desc: text(args.descSel)};
+}"""
+
 # Redacted login-page diagnostics for --debug-qr. Only structural facts and
 # sizes are returned, never QR content.
 QR_DEBUG = """(args) => {
@@ -263,6 +275,7 @@ QR_DEBUG = """(args) => {
     const qrRoot = document.querySelector(args.sel);
     const loginPage = document.querySelector(args.pageSel);
     const firstQr = qrRoot ? qrRoot.querySelector('canvas') : null;
+    const pinEl = document.querySelector(args.pinSel);
     return {
         url: location.href,
         hasLoginPage: !!loginPage,
@@ -270,6 +283,8 @@ QR_DEBUG = """(args) => {
         qrCanvases: shapes(qrRoot),
         pageCanvases: shapes(loginPage),
         qrDataLen: firstQr ? dataLen(firstQr) : -1,
+        hasPin: !!pinEl,
+        pinLen: pinEl ? (pinEl.textContent || '').trim().length : 0,
         hasEmailForm: !!document.querySelector("[class*='login_form']"),
     };
 }"""
