@@ -137,3 +137,47 @@ def test_open_passes_zoom_to_viewer(tmp_path, monkeypatch):
     dialog.open(_png_uri())
     assert "--zoom" in captured["args"]
     assert captured["args"][captured["args"].index("--zoom") + 1] == "3"
+
+
+def test_clean_title_trims_and_falls_back():
+    assert qr.clean_title("  Inbox  ") == "Inbox"
+    assert qr.clean_title("") == "LINE"
+    assert qr.clean_title("   ") == "LINE"
+    assert qr.clean_title(None) == "LINE"
+
+
+def test_dialog_title_defaults_to_line(tmp_path):
+    dialog = qr.QrDialog(png=str(tmp_path / "qr.png"), status=str(tmp_path / "status.json"))
+    assert dialog.title == "LINE"
+
+
+def test_open_passes_title_to_viewer(tmp_path, monkeypatch):
+    captured = {}
+
+    class _Proc:
+        def poll(self):
+            return 0
+
+    def fake_popen(args, **_k):
+        captured["args"] = args
+        return _Proc()
+
+    monkeypatch.setattr(qr.subprocess, "Popen", fake_popen)
+    dialog = qr.QrDialog(png=str(tmp_path / "qr.png"), status=str(tmp_path / "status.json"),
+                         title="  Inbox  ")
+    dialog.open(_png_uri())
+    assert captured["args"][captured["args"].index("--title") + 1] == "Inbox"
+
+
+def test_write_status_is_the_shared_payload_shape(tmp_path):
+    from line_ext_msg.service import qr_status
+
+    status = str(tmp_path / "status.json")
+    qr_status.write_status(status, "waiting", pin="123456", desc="Enter this code")
+    with open(status, encoding="utf-8") as handle:
+        assert json.load(handle) == {
+            "state": "waiting",
+            "pin": "123456",
+            "desc": "Enter this code",
+        }
+    assert not os.path.exists(f"{status}.tmp"), "the temp file must be replaced away"

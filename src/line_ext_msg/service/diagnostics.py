@@ -5,12 +5,9 @@ Everything here returns values only. Callers save the DOM through the
 returns secret values, only key names with type and length.
 """
 
-import json
-import urllib.request
-
 from playwright.sync_api import Page
 
-from ..browser import auth, js, session
+from ..browser import auth, cdp, js, session
 from ..config.settings import Settings
 from ..domain.models import Room
 
@@ -91,23 +88,14 @@ def probe_extension_storage(page: Page) -> dict:
 
 def list_line_targets(settings: Settings) -> list:
     """CDP targets belonging to the LINE extension (read-only)."""
-    try:
-        with urllib.request.urlopen(f"{settings.cdp_endpoint}/json/list", timeout=3) as res:
-            targets = json.loads(res.read().decode("utf-8", errors="ignore"))
-    except Exception:
-        return []
     out: list[dict] = []
-    if not isinstance(targets, list):
-        return out
-    for t in targets:
-        if not isinstance(t, dict):
-            continue
-        url = t.get("url") or ""
+    for target in cdp.list_targets(settings):
+        url = target.get("url") or ""
         if settings.extension_id not in url:
             continue
         out.append({
-            "type": t.get("type") or "",
-            "title": (t.get("title") or "")[:120],
+            "type": target.get("type") or "",
+            "title": (target.get("title") or "")[:120],
             "url": url[:300],
         })
     return out

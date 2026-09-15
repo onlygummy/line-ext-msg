@@ -9,13 +9,13 @@ Tkinter and the synchronous Playwright API on the same thread.
 from __future__ import annotations
 
 import base64
-import json
 import os
 import subprocess
 import sys
 
 from ..config import paths
 from ..domain.errors import QrDialogFailed
+from .qr_status import write_status
 
 MIN_ZOOM = 1
 MAX_ZOOM = 4
@@ -46,6 +46,12 @@ def format_pin(pin: str) -> str:
     return " ".join(text)
 
 
+def clean_title(text: str | None) -> str:
+    """Trim a dialog title; blank or missing falls back to LINE. Pure."""
+    title = (text or "").strip()
+    return title or "LINE"
+
+
 def data_uri_to_bytes(data_uri: str) -> bytes:
     """Decode a base64 image data URI to bytes. Pure (unit-testable)."""
     if not data_uri:
@@ -68,18 +74,6 @@ def _atomic_write(path: str, data: bytes) -> None:
     os.replace(tmp, path)
 
 
-def _write_status(path: str, state: str, **extra) -> None:
-    payload = {"state": state}
-    payload.update(extra)
-    tmp = f"{path}.tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(payload, f)
-        os.replace(tmp, path)
-    except OSError:
-        pass
-
-
 def _remove(path: str) -> None:
     try:
         if os.path.exists(path):
@@ -92,10 +86,11 @@ class QrDialog:
     """Owns the viewer process and the shared QR/status files."""
 
     def __init__(self, png: str = paths.QR_PNG, status: str = paths.QR_STATUS,
-                 zoom: int = 2):
+                 zoom: int = 2, title: str = "LINE"):
         self.png = png
         self.status = status
         self.zoom = clamp_zoom(zoom)
+        self.title = clean_title(title)
         self._proc: subprocess.Popen | None = None
         self._last = ""
         self._pin: tuple[str, str] | None = None
@@ -120,7 +115,7 @@ class QrDialog:
         if (pin, desc) == self._pin:
             return
         self._pin = (pin, desc)
-        _write_status(self.status, "waiting", pin=pin, desc=desc)
+        write_status(self.status, "waiting", pin=pin, desc=desc)
 
     def show_qr(self, data_uri: str) -> None:
         """Write the QR image and switch the dialog back to the QR state.
@@ -130,7 +125,7 @@ class QrDialog:
         """
         self.update(data_uri)
         self._pin = ("", "")
-        _write_status(self.status, "waiting", pin="", desc="")
+        write_status(self.status, "waiting", pin="", desc="")
 
     def open(self, data_uri: str) -> None:
         """Write the first QR image, then launch the viewer process."""
@@ -139,7 +134,7 @@ class QrDialog:
             self._proc = subprocess.Popen(
                 [sys.executable, "-m", "line_ext_msg.service.qr_view",
                  "--png", self.png, "--status", self.status,
-                 "--zoom", str(self.zoom)],
+                 "--zoom", str(self.zoom), "--title", self.title],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
@@ -148,7 +143,7 @@ class QrDialog:
 
     def finish(self, state: str = "cancel", keep_png: bool = False) -> None:
         """Signal the viewer to close, then clean up the shared files."""
-        _write_status(self.status, state)
+        write_status(self.status, state)
         proc = self._proc
         if proc is not None and proc.poll() is None:
             try:

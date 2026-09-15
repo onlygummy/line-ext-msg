@@ -54,3 +54,28 @@ def test_qr_ready_ms_default():
 
 def test_debug_qr_override():
     assert Settings(debug_qr=True).debug_qr is True
+
+
+def test_dialog_title_default():
+    old = os.environ.pop("LINE_EXT_MSG_DIALOG_TITLE", None)
+    try:
+        assert Settings().dialog_title == "LINE"
+    finally:
+        if old is not None:
+            os.environ["LINE_EXT_MSG_DIALOG_TITLE"] = old
+
+
+def test_dialog_title_env_override():
+    old = os.environ.get("LINE_EXT_MSG_DIALOG_TITLE")
+    os.environ["LINE_EXT_MSG_DIALOG_TITLE"] = "Inbox"
+    try:
+        assert Settings().dialog_title == "Inbox"
+    finally:
+        if old is None:
+            del os.environ["LINE_EXT_MSG_DIALOG_TITLE"]
+        else:
+            os.environ["LINE_EXT_MSG_DIALOG_TITLE"] = old
+
+
+def test_dialog_title_constructor_override():
+    assert Settings(dialog_title="Inbox").dialog_title == "Inbox"

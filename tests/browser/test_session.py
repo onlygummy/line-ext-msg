@@ -1,7 +1,5 @@
 """Session helpers survive a missing extension (no real browser)."""
 
-import json
-
 from line_ext_msg.browser import session
 from tests.helpers import make_settings
 
@@ -58,20 +56,6 @@ def test_open_store_page_returns_fronted_tab(monkeypatch):
     assert page.gotos == [make_settings().webstore_url]
 
 
-class _Res:
-    def __init__(self, data):
-        self._data = data
-
-    def read(self):
-        return self._data
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_a):
-        return False
-
-
 def test_close_extension_tabs_closes_only_extension_pages(monkeypatch):
     settings = make_settings()
     ext_url = f"chrome-extension://{settings.extension_id}/index.html#/chats"
@@ -81,16 +65,12 @@ def test_close_extension_tabs_closes_only_extension_pages(monkeypatch):
         {"type": "service_worker", "url": ext_url, "id": "c"},
     ]
     closed = []
-
-    def fake_urlopen(url, timeout=0):
-        if url.endswith("/json/list"):
-            return _Res(json.dumps(targets).encode())
-        closed.append(url)
-        return _Res(b"")
-
-    monkeypatch.setattr(session.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(session.cdp, "list_targets", lambda s, timeout_sec=3: targets)
+    monkeypatch.setattr(
+        session.cdp, "close_target", lambda s, target_id, timeout_sec=3: closed.append(target_id)
+    )
     session.close_extension_tabs(settings)
-    assert closed == [f"{settings.cdp_endpoint}/json/close/a"]
+    assert closed == ["a"]
 
 
 class _ReadyPage:

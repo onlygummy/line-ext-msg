@@ -57,6 +57,8 @@ msgs = msgs.download_media("session/media")          # writes the image files
 msgs.save("session/messages.json")                   # writes room + fetched_at + messages
 ```
 
+Upgrading from 1.x: the old `save_rooms`, `save_messages`, and `save_probe` methods are gone, and `get_messages` no longer takes `media_dir` or `include_media_data`. Call `.save(path)` on the result instead, and move image fetching to `with_media=True` plus `download_media(dir)`.
+
 ## Recipes
 
 Filter by date and keyword, then count senders:
@@ -178,6 +180,7 @@ with LineClient(settings) as line:
 | `LINE_EXT_MSG_HEADLESS` | `1` | run Chrome without a window |
 | `LINE_EXT_MSG_QUIET` | off | do not wait, keep the checklist silent |
 | `LINE_EXT_MSG_QR_ZOOM` | `2` | QR dialog zoom (1-4) |
+| `LINE_EXT_MSG_DIALOG_TITLE` | `LINE` | window title and header text of the QR dialog |
 | `LINE_EXT_MSG_QR_READY_MS` | `20000` | how long to wait for the QR canvas |
 | `LINE_EXT_MSG_ROOMS_SCROLL_MS` | `4000` | room list scroll budget |
 | `LINE_EXT_MSG_MSGS_SCROLL_MS` | `8000` | message backfill scroll budget |
@@ -211,6 +214,7 @@ On first run the CLI starts Chrome on the isolated profile. If the LINE extensio
 - `unread_digest`, `unread_full`, and `search_all` return a `Report` (list of dicts), not models.
 - `download_media` only writes what `with_media=True` already fetched; it does not re-open the room.
 - The QR dialog is the only login UI; there is no callback for an app to render the QR itself.
+- Debug Chrome starts with `--disable-notifications` and `--hide-crash-restore-bubble`, so web and push notifications stay off and the restore bubble never appears after a force kill. Toasts an extension raises through `chrome.notifications` are not covered.
 - The session is tied to the running Chrome process, so keep Chrome alive to avoid scanning again.
 - `from_me` is a heuristic (no username means your own message) and is not yet confirmed with a dump that contains your own messages.
 - Windows only for now: Chrome discovery and process control use Windows paths and PowerShell.
@@ -230,6 +234,23 @@ src/line_ext_msg/
   service/   LineClient facade, readiness, diagnostics, QR dialog
   cli.py     entry point
 ```
+
+Each layer may import only the ones listed below. `domain` is the shared
+vocabulary (models and typed errors), so every layer may import it.
+
+| Layer | May import |
+| --- | --- |
+| `config` | nothing |
+| `domain` | nothing |
+| `output` | `config`, `domain` |
+| `results` | `domain`, `output` |
+| `browser` | `config`, `domain` |
+| `scraper` | `config`, `domain`, `browser`, `results` |
+| `service` | every layer above |
+| `cli` | `service`, `config`, `domain`, `output` |
+
+`results` is the savable result layer, so `scraper` reaches `output` (the file
+writers) through it.
 
 The public API is only `line_ext_msg/__init__.py` (`LineClient`, `Room`, `Message`, `StepResult`, `Rooms`, `Messages`, `Report`, `Probe`, `Dom`, `Settings`, `sender_stats`, and the typed errors). Subpackages are implementation details and may change without notice.
 

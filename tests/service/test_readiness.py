@@ -52,10 +52,12 @@ class _Dialog:
 
     instances: list = []
 
-    def __init__(self, png="session/qr.png", status="session/qr_status.json", zoom=2):
+    def __init__(self, png="session/qr.png", status="session/qr_status.json", zoom=2,
+                 title="LINE"):
         self.png = png
         self.status = status
         self.zoom = zoom
+        self.title = title
         self.opened = None
         self.updated = []
         self.qr_shows = []

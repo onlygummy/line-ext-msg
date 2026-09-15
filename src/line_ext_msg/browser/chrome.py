@@ -1,14 +1,12 @@
 """Chrome lifecycle: start the debug instance and read its CDP mode."""
 
-import json
 import logging
 import os
 import subprocess
 import time
-import urllib.request
 
 from ..config.settings import Settings
-from . import process
+from . import cdp, process
 
 logger = logging.getLogger(__name__)
 
@@ -24,13 +22,6 @@ def invalidate(settings: Settings) -> None:
     _version_cache.pop(settings.cdp_endpoint, None)
 
 
-def _fetch_version(endpoint: str, timeout_sec: float) -> dict:
-    """One raw /json/version request; raises when the endpoint is unreachable."""
-    with urllib.request.urlopen(f"{endpoint}/json/version", timeout=timeout_sec) as res:
-        data = json.loads(res.read().decode("utf-8", errors="ignore"))
-    return data if isinstance(data, dict) else {}
-
-
 def cdp_version(
     settings: Settings, timeout_sec: float = 2, use_cache: bool = True
 ) -> dict:
@@ -41,12 +32,9 @@ def cdp_version(
         cached = _version_cache.get(endpoint)
         if cached is not None and now - cached[0] < _VERSION_TTL_S:
             return cached[1]
-    payload: dict = {}
-    try:
-        payload = _fetch_version(endpoint, timeout_sec)
+    payload = cdp.version(settings, timeout_sec)
+    if payload:
         logger.debug("cdp version: %s", payload.get("Browser", "?"))
-    except Exception as e:
-        logger.debug("cdp version probe failed: %s", e)
     # Cache successes only: a failure must stay observable to the next poll.
     if use_cache and payload:
         _version_cache[endpoint] = (now, payload)
@@ -115,6 +103,10 @@ def start_chrome_debug(settings: Settings) -> None:
         f"--user-data-dir={data_dir}",
         "--no-first-run",
         "--no-default-browser-check",
+        # No web or push notifications, and no "Restore pages?" bubble after
+        # a force kill (the profile records exit_type Crashed).
+        "--disable-notifications",
+        "--hide-crash-restore-bubble",
     ]
     if settings.headless:
         args.append("--headless=new")

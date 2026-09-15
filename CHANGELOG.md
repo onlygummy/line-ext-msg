@@ -1,11 +1,24 @@
 # Changelog
 
-## Unreleased
+## 2.0.0
+
+### Breaking changes
+
+- Queries no longer write files. `list_rooms`, `get_messages`, `unread_digest`, `unread_full`, `search_all`, `dump_page`, and `dump_room` return savable result types (`Rooms`, `Messages`, `Report`, `Probe`, `Dom`) and the caller writes with `.save(path)`. `save_rooms`, `save_messages`, and `save_probe` were removed
+- Media moved out of the query: `get_messages(with_media=True)` fetches image bubbles in memory as data URIs (no files) and `Messages.download_media(dir, include_data=False)` writes them. The `media_dir` and `include_media_data` arguments were removed from `get_messages`
+
+### Changes
 
 - Faster Chrome lifecycle: the debug PID is recorded at launch and a stop force-kills that whole tree with a single `taskkill /T` instead of enumerating every process through PowerShell; the start poll backs off after 2s and passes `--no-first-run --no-default-browser-check`; the graceful-close wait drops from 8s to 3s (`LINE_EXT_MSG_STOP_GRACEFUL_MS`); the post-switch settle wait drops from 800ms to 200ms (`LINE_EXT_MSG_READY_SETTLE_MS`); and repeated `/json/version` reads within one transition share a 0.3s cache
 - Mode switches now close Chrome for real: `mode.stop` sends the CDP `Browser.close` command over the existing connection, because Playwright's `browser.close()` on a browser from `connect_over_cdp` only detaches. Graceful shutdown used to be a fixed wait that always ended in a force kill
 - Quieter install check: when the extension files are already on disk `check_installed` reports `found_on_disk=True` without opening a probe tab, and a blocked probe (`net::ERR_BLOCKED_BY_CLIENT`) logs as one line instead of the full Playwright call log. The real load is still exercised by step `[4/5]`
 - Fix: `ensure_chrome` reuses a running debug Chrome whatever its mode, so `--dump` and `--dump-room` no longer fail with `ChromeNotReady` when a headed instance (for example after a QR login) is already up
+- Docs match the code again: the layer table in `__init__.py` and in the README now lists every real edge (`domain` is the shared vocabulary, `results` sits between `scraper` and `output`), and the Windows-only classifier replaces `OS Independent`
+- CDP HTTP calls live in one module (`browser/cdp.py`): one `/json/list` reader, one `/json/close/{id}` caller, and one `/json/version` fetch replace four, three, and one copy in `session.py`, `diagnostics.py`, and `chrome.py`
+- The QR status file has one writer (`service/qr_status.py`) shared by the controller and the viewer process, replacing two copies of the temp-file plus replace dance
+- Removed the unused `SESSION_KEY_LEN` script from `browser/js.py`
+- The debug profile launches with `--disable-notifications` and `--hide-crash-restore-bubble`, so web and push notifications stay off and the "Restore pages?" bubble never appears after a force kill. Toasts an extension raises through `chrome.notifications` are outside the scope of that switch
+- The QR dialog title is configurable: `LINE_EXT_MSG_DIALOG_TITLE` sets both the window title bar and the header text inside the card (default `LINE`), and the CLI exposes it as `--dialog-title`. Blank or whitespace falls back to `LINE`
 - Layered package: `config`, `domain`, `browser`, `scraper`, `output`, `service`. Imports flow one way with no cycles, and only `line_ext_msg/__init__.py` exposes the public API
 - Split the two god modules: `messages.py` (731 lines) became `scraper/{messages,scroll,extract,media}.py`, and `client.py` (417 lines) became `service/{client,readiness,diagnostics,maintenance}.py`
 - All `page.evaluate` snippets now live in `browser/js.py` and take a single args object; a test scans that module to keep the single-argument rule
@@ -23,8 +36,6 @@
 - Dialog redesign: a light card with the LINE header, a colored status pill, and a large spaced PIN. It re-centers on the primary screen whenever its content changes size, DPI awareness keeps text crisp, and the copy was trimmed to the essentials
 - Fix: the dialog no longer flashes the QR again while the PIN is being verified. It keeps showing the PIN and returns to the QR only when a genuinely new QR image appears, until login succeeds or the window is closed
 - English-only project with structured logging: every CLI, dialog, and error string is English, and progress goes through the `line_ext_msg` logger instead of prints. The CLI adds `--verbose`, `--quiet-log`, `--log-level`, and `--log-file`; results stay on stdout and logs go to stderr. README and CHANGELOG translated to English
-- Queries no longer write files. `list_rooms`, `get_messages`, `unread_digest`, `unread_full`, `search_all`, `dump_page`, and `dump_room` return savable result types (`Rooms`, `Messages`, `Report`, `Probe`, `Dom`) and the caller writes with `.save(path)`. `save_rooms`, `save_messages`, and `save_probe` were removed
-- Media moved out of the query: `get_messages(with_media=True)` fetches image bubbles in memory as data URIs (no files) and `Messages.download_media(dir, include_data=False)` writes them. The `media_dir` and `include_media_data` arguments were removed from `get_messages`
 - Session reality: the token stays in Local Storage (`lcs_secure_<mid>`, about 3.2 KB) across restarts, but the key that decrypts it lives in the extension's sandboxed `ltsmSandbox.html`, which has no persistent storage, so a fresh Chrome always asks for the QR again. Startup therefore never restarts a live Chrome to match the preferred mode; a running instance is reused and stays logged in, so the QR is scanned once per Chrome lifetime
 - Accurate headless detection reads the full CDP version payload (User-Agent), not the Browser string only
 - Tooling: `py.typed`, ruff, mypy, and a windows-latest CI workflow. Shared test helpers live in `tests/helpers.py` with `tests/conftest.py`, and tests mirror the package layout

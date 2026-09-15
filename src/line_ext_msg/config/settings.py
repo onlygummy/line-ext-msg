@@ -44,6 +44,10 @@ class Settings:
     # QR dialog zoom. The QR canvas is small, so 2x is readable without the
     # blockiness of a larger nearest-neighbor zoom.
     qr_zoom: int = field(default_factory=lambda: _env_int("LINE_EXT_MSG_QR_ZOOM", 2))
+    # Title of the QR dialog window and its in-card header.
+    dialog_title: str = field(
+        default_factory=lambda: _env("LINE_EXT_MSG_DIALOG_TITLE", "LINE")
+    )
     qr_ready_ms: int = field(default_factory=lambda: _env_int("LINE_EXT_MSG_QR_READY_MS", 20000))
     debug_qr: bool = field(
         default_factory=lambda: _env("LINE_EXT_MSG_DEBUG_QR", "").lower() in ("1", "true", "yes")

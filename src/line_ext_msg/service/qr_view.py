@@ -19,7 +19,8 @@ import json
 import os
 import tkinter as tk
 
-from .qr import center_xy, clamp_zoom, format_pin
+from .qr import center_xy, clamp_zoom, clean_title, format_pin
+from .qr_status import write_status
 
 POLL_MS = 400
 
@@ -61,10 +62,11 @@ def _mtime(path: str) -> float:
 
 
 class _Dialog:
-    def __init__(self, png: str, status: str, zoom: int):
+    def __init__(self, png: str, status: str, zoom: int, title: str = "LINE"):
         self.png = png
         self.status = status
         self.zoom = clamp_zoom(zoom)
+        self.title = clean_title(title)
         self._photo: tk.PhotoImage | None = None
         self._mtime = -1.0
         self._pin = ""
@@ -73,7 +75,7 @@ class _Dialog:
 
         _enable_dpi()
         self.root = tk.Tk()
-        self.root.title("LINE")
+        self.root.title(self.title)
         self.root.attributes("-topmost", True)
         self.root.resizable(False, False)
         self.root.configure(bg=BG)
@@ -84,7 +86,7 @@ class _Dialog:
 
         header = tk.Frame(self.root, bg=BG)
         header.pack(fill="x", padx=22, pady=(18, 0))
-        tk.Label(header, text="LINE", bg=BG, fg=TEXT, font=(FONT, 15, "bold")).pack(side="left")
+        tk.Label(header, text=self.title, bg=BG, fg=TEXT, font=(FONT, 15, "bold")).pack(side="left")
         self.status_label = tk.Label(
             header, text="", bg=GREEN, fg=BG, font=(FONT, 10, "bold"), padx=10, pady=3
         )
@@ -150,20 +152,11 @@ class _Dialog:
 
     # -- file-driven updates -------------------------------------------
 
-    def _write_status(self, state: str) -> None:
-        tmp = f"{self.status}.tmp"
-        try:
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump({"state": state}, f)
-            os.replace(tmp, self.status)
-        except OSError:
-            pass
-
     def _cancel(self) -> None:
         if self._closed:
             return
         self._closed = True
-        self._write_status("cancel")
+        write_status(self.status, "cancel")
         self.root.destroy()
 
     def _reload_image(self) -> None:
@@ -215,8 +208,9 @@ def main() -> None:
     parser.add_argument("--png", required=True, help="QR image to display")
     parser.add_argument("--status", required=True, help="JSON status file to watch")
     parser.add_argument("--zoom", type=int, default=2, help="image zoom, 1-4")
+    parser.add_argument("--title", default="LINE", help="window title and header text")
     args = parser.parse_args()
-    _Dialog(args.png, args.status, args.zoom).run()
+    _Dialog(args.png, args.status, args.zoom, args.title).run()
 
 
 if __name__ == "__main__":

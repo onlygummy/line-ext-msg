@@ -288,20 +288,3 @@ QR_DEBUG = """(args) => {
         hasEmailForm: !!document.querySelector("[class*='login_form']"),
     };
 }"""
-
-# Longest value length among localStorage keys starting with args.prefix.
-# Used to verify the login token flushed. The real key carries a device or
-# user id suffix (lcs_secure_<id>), so an exact-name lookup always misses.
-SESSION_KEY_LEN = """(args) => {
-    try {
-        const ls = window.localStorage || {};
-        let best = 0;
-        for (const k of Object.keys(ls)) {
-            if (k.indexOf(args.prefix) === 0) {
-                const v = ls.getItem(k) || '';
-                if (v.length > best) best = v.length;
-            }
-        }
-        return best;
-    } catch (e) { return -1; }
-}"""

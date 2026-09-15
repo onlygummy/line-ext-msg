@@ -157,7 +157,7 @@ def _qr_login(client) -> str:
         logger.warning("could not capture the QR (reloaded=%s)", reloaded)
         return "fallback"
 
-    dialog = qr.QrDialog(zoom=settings.qr_zoom)
+    dialog = qr.QrDialog(zoom=settings.qr_zoom, title=settings.dialog_title)
     try:
         dialog.open(data_uri)
     except QrDialogFailed as e:

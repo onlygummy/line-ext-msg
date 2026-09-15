@@ -1,16 +1,15 @@
 """CDP session: attach, find LINE tab, route to chats, readiness probes."""
 
 import glob
-import json
 import logging
 import os
-import urllib.request
 
 from playwright.sync_api import Browser, BrowserContext, Page, sync_playwright
 
 from ..config.selectors import SELECTORS
 from ..config.settings import Settings
 from ..domain.errors import AttachFailed
+from . import cdp
 
 logger = logging.getLogger(__name__)
 
@@ -72,45 +71,29 @@ def close_startup_tabs(settings: Settings) -> None:
         # Blocked chrome-extension:// loads (e.g. before install) land here.
         "chrome-error://",
     )
-    try:
-        with urllib.request.urlopen(f"{settings.cdp_endpoint}/json/list", timeout=3) as res:
-            targets = json.loads(res.read().decode("utf-8", errors="ignore"))
-    except Exception:
-        return
-    for t in targets:
-        if not isinstance(t, dict) or t.get("type") != "page":
+    for target in cdp.list_targets(settings):
+        if target.get("type") != "page":
             continue
-        url = t.get("url") or ""
+        url = target.get("url") or ""
         if settings.extension_id in url:
             continue
-        if url.startswith(prefixes) and t.get("id"):
-            try:
-                urllib.request.urlopen(f"{settings.cdp_endpoint}/json/close/{t['id']}", timeout=3).read()
-            except Exception:
-                continue
+        if url.startswith(prefixes) and target.get("id"):
+            cdp.close_target(settings, target["id"])
 
 
 def close_duplicate_line_targets(settings: Settings) -> None:
     """Close extra LINE pages via CDP HTTP so repeats don't pile up."""
-    try:
-        with urllib.request.urlopen(f"{settings.cdp_endpoint}/json/list", timeout=3) as res:
-            targets = json.loads(res.read().decode("utf-8", errors="ignore"))
-    except Exception:
-        return
     seen_first = False
-    for t in targets:
-        if t.get("type") != "page":
+    for target in cdp.list_targets(settings):
+        if target.get("type") != "page":
             continue
-        if settings.extension_id not in (t.get("url") or ""):
+        if settings.extension_id not in (target.get("url") or ""):
             continue
         if not seen_first:
             seen_first = True
             continue
-        if t.get("id"):
-            try:
-                urllib.request.urlopen(f"{settings.cdp_endpoint}/json/close/{t['id']}", timeout=3).read()
-            except Exception:
-                continue
+        if target.get("id"):
+            cdp.close_target(settings, target["id"])
 
 
 def close_extension_tabs(settings: Settings) -> None:
@@ -120,23 +103,11 @@ def close_extension_tabs(settings: Settings) -> None:
     loads, and closing them keeps only the Web Store page the install flow
     opened.
     """
-    try:
-        with urllib.request.urlopen(f"{settings.cdp_endpoint}/json/list", timeout=3) as res:
-            targets = json.loads(res.read().decode("utf-8", errors="ignore"))
-    except Exception:
-        return
-    if not isinstance(targets, list):
-        return
-    for t in targets:
-        if not isinstance(t, dict) or t.get("type") != "page":
+    for target in cdp.list_targets(settings):
+        if target.get("type") != "page":
             continue
-        if settings.extension_id in (t.get("url") or "") and t.get("id"):
-            try:
-                urllib.request.urlopen(
-                    f"{settings.cdp_endpoint}/json/close/{t['id']}", timeout=3
-                ).read()
-            except Exception:
-                continue
+        if settings.extension_id in (target.get("url") or "") and target.get("id"):
+            cdp.close_target(settings, target["id"])
 
 
 def goto_chats(page: Page, settings: Settings) -> None:

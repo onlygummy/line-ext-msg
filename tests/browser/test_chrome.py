@@ -18,28 +18,28 @@ def _clear_version_cache():
 def test_probe_reads_the_endpoint_once(monkeypatch):
     calls = []
 
-    def fake_fetch(endpoint, timeout_sec):
-        calls.append(endpoint)
+    def fake_version(settings, timeout_sec=2):
+        calls.append(settings.cdp_endpoint)
         return {"Browser": "Chrome/136", "User-Agent": "HeadlessChrome/136"}
 
-    monkeypatch.setattr(chrome, "_fetch_version", fake_fetch)
+    monkeypatch.setattr(chrome.cdp, "version", fake_version)
     assert chrome.probe(make_settings()) == (True, True)
     assert len(calls) == 1
 
 
 def test_probe_reports_absent_on_failure(monkeypatch):
-    monkeypatch.setattr(chrome, "_fetch_version", lambda endpoint, timeout_sec: {})
+    monkeypatch.setattr(chrome.cdp, "version", lambda settings, timeout_sec=2: {})
     assert chrome.probe(make_settings()) == (False, False)
 
 
 def test_ready_and_headless_share_one_fetch(monkeypatch):
     calls = []
 
-    def fake_fetch(endpoint, timeout_sec):
-        calls.append(endpoint)
+    def fake_version(settings, timeout_sec=2):
+        calls.append(settings.cdp_endpoint)
         return {"Browser": "Chrome/136"}
 
-    monkeypatch.setattr(chrome, "_fetch_version", fake_fetch)
+    monkeypatch.setattr(chrome.cdp, "version", fake_version)
     settings = make_settings()
     assert chrome.is_debug_ready(settings) is True
     assert chrome.is_headless(settings) is False
@@ -49,11 +49,11 @@ def test_ready_and_headless_share_one_fetch(monkeypatch):
 def test_invalidate_forces_a_refetch(monkeypatch):
     calls = []
 
-    def fake_fetch(endpoint, timeout_sec):
-        calls.append(endpoint)
+    def fake_version(settings, timeout_sec=2):
+        calls.append(settings.cdp_endpoint)
         return {"Browser": "Chrome/136"}
 
-    monkeypatch.setattr(chrome, "_fetch_version", fake_fetch)
+    monkeypatch.setattr(chrome.cdp, "version", fake_version)
     settings = make_settings()
     chrome.is_debug_ready(settings)
     chrome.invalidate(settings)
@@ -116,6 +116,8 @@ def test_start_records_pid_and_skips_first_run(monkeypatch, tmp_path):
     args = captured["args"]
     assert "--no-first-run" in args
     assert "--no-default-browser-check" in args
+    assert "--disable-notifications" in args
+    assert "--hide-crash-restore-bubble" in args
     assert "--headless=new" in args
     assert written == [4242]
 

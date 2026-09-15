@@ -134,6 +134,8 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="start Chrome with a window (for the QR scan)")
     parser.add_argument("--qr-zoom", dest="qr_zoom", type=int, default=None, metavar="N",
                         help="zoom the QR in the dialog N times (default 2, range 1-4)")
+    parser.add_argument("--dialog-title", dest="dialog_title", default=None, metavar="TEXT",
+                        help="window title and header text of the QR dialog (default LINE)")
     parser.add_argument("--debug-qr", dest="debug_qr", action="store_true", default=None,
                         help="log login-page diagnostics when the QR capture fails (no secrets)")
     parser.add_argument("--clear-session", dest="clear_session", action="store_true",
@@ -165,6 +167,8 @@ def _settings_from_args(args) -> Settings | None:
         overrides["headless"] = True
     if args.qr_zoom is not None:
         overrides["qr_zoom"] = args.qr_zoom
+    if args.dialog_title is not None:
+        overrides["dialog_title"] = args.dialog_title
     if args.debug_qr:
         overrides["debug_qr"] = True
     return Settings(**overrides) if overrides else None
