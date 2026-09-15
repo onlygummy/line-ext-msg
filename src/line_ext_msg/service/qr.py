@@ -30,6 +30,22 @@ def clamp_zoom(value) -> int:
     return max(MIN_ZOOM, min(MAX_ZOOM, zoom))
 
 
+def center_xy(win_w: int, win_h: int, screen_w: int, screen_h: int,
+              bias: float = 0.45) -> tuple[int, int]:
+    """Top-left coordinate that centers a window. bias < 0.5 sits higher. Pure."""
+    x = int((screen_w - win_w) / 2)
+    y = int((screen_h - win_h) * bias)
+    return max(0, x), max(0, y)
+
+
+def format_pin(pin: str) -> str:
+    """Space out PIN digits so they read easily. Pure (unit-testable)."""
+    text = (pin or "").strip()
+    if len(text) < 2:
+        return text
+    return " ".join(text)
+
+
 def data_uri_to_bytes(data_uri: str) -> bytes:
     """Decode a base64 image data URI to bytes. Pure (unit-testable)."""
     if not data_uri:

@@ -58,7 +58,7 @@ def _ensure_headed(client) -> bool:
     if mode.mode_of(client.settings) == mode.HEADED:
         return False
     if not client.settings.quiet:
-        print("เปิดหน้าต่าง Chrome เพื่อสแกน QR (แคป QR ใน headless ไม่ได้)...", flush=True)
+        print("เปิดหน้าต่าง Chrome เพื่อสแกน QR...", flush=True)
     switch_mode(client, headless=False)
     return True
 
@@ -163,8 +163,7 @@ def _qr_login(client) -> str:
         raise
 
     if not client.settings.quiet:
-        print("แสดง QR ในหน้าต่าง LINE QR สแกนด้วยแอป LINE บนมือถือ", flush=True)
-        print("ปิดหน้าต่าง LINE QR เพื่อยกเลิกการรอ", flush=True)
+        print("แสดง QR ในหน้าต่าง (ปิดเพื่อยกเลิก)", flush=True)
 
     logged = False
     try:
@@ -194,12 +193,7 @@ def _print_keep_open(client) -> None:
     """Tell the user why the Chrome process is left running after login."""
     if client.settings.quiet:
         return
-    print("ล็อกอินสำเร็จ", flush=True)
-    print(
-        "ค้างโปรเซส Chrome ไว้ให้ session อยู่ รอบถัดไปจะไม่ต้องสแกนใหม่ "
-        "(ปิด Chrome เมื่อไรต้องสแกนใหม่)",
-        flush=True,
-    )
+    print("ล็อกอินสำเร็จ (อย่าปิด Chrome ถ้าไม่อยากสแกนใหม่)", flush=True)
 
 
 def _install_extension(client, settings: Settings, detail: str) -> tuple[bool, str]:
@@ -223,8 +217,7 @@ def _install_extension(client, settings: Settings, detail: str) -> tuple[bool, s
         if not settings.quiet:
             print(f"เปิดหน้าเว็บสโตร์ไม่สำเร็จ: {e}", flush=True)
     if not settings.quiet:
-        print("เปิดแท็บเว็บสโตร์แล้ว ติดตั้ง LINE แล้วโปรแกรมจะตรวจต่ออัตโนมัติ", flush=True)
-        print("ปิดหน้าต่าง Chrome เพื่อยกเลิก", flush=True)
+        print("ติดตั้ง LINE จากเว็บสโตร์ (ปิดหน้าต่างเพื่อยกเลิก)", flush=True)
 
     # No timeout on purpose: stop by installing the extension, closing
     # Chrome, or pressing Ctrl+C.
@@ -314,9 +307,7 @@ def run(client, wait_for_login: bool | None = None,
         if outcome == "fallback":
             _ensure_headed(client)
             if not settings.quiet:
-                print("ยังไม่ล็อกอิน กรุณาล็อกอินในหน้าต่าง Chrome ที่เปิดไว้ โปรแกรมกำลังรอ...",
-                      flush=True)
-                print("กด Ctrl+C เพื่อยกเลิก", flush=True)
+                print("ล็อกอินในหน้าต่าง Chrome (Ctrl+C เพื่อยกเลิก)", flush=True)
             logged_in, reason = auth.wait_for_login(client._page, wait_ms, on_tick=_tick)
         elif outcome == "ok":
             logged_in, reason = True, "chat"

@@ -92,6 +92,22 @@ def test_clamp_zoom_bounds():
     assert qr.clamp_zoom("bad") == 2
 
 
+def test_format_pin_spaces_digits():
+    assert qr.format_pin("5239") == "5 2 3 9"
+    assert qr.format_pin(" 5239 ") == "5 2 3 9"
+
+
+def test_format_pin_short_or_empty():
+    assert qr.format_pin("") == ""
+    assert qr.format_pin("5") == "5"
+
+
+def test_center_xy_grid():
+    assert qr.center_xy(400, 200, 1000, 800) == (300, 270)
+    assert qr.center_xy(1000, 800, 1000, 800) == (0, 0)
+    assert qr.center_xy(2000, 100, 1000, 800) == (0, 315)
+
+
 def test_open_passes_zoom_to_viewer(tmp_path, monkeypatch):
     captured = {}
 
