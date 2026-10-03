@@ -9,7 +9,7 @@ DUMPS_DIR = f"{SESSION_DIR}/dumps"
 MEDIA_DIR = f"{SESSION_DIR}/media"
 ROOMS_JSON = f"{SESSION_DIR}/rooms.json"
 PROBE_JSON = f"{SESSION_DIR}/session_probe.json"
-PROBE_BEFORE_CLEAR_JSON = f"{SESSION_DIR}/session_probe_before_clear.json"
+PROBE_BEFORE_LOGOUT_JSON = f"{SESSION_DIR}/session_probe_before_logout.json"
 PAGE_DUMP = f"{DUMPS_DIR}/line_dom.html"
 ROOM_DUMP = f"{DUMPS_DIR}/line_room.html"
 

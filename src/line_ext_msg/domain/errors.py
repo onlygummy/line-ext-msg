@@ -36,3 +36,11 @@ class RoomNotFound(LineError):
         self.ref = ref
         self.available = available
         super().__init__(f"Room '{ref}' not found (available: {', '.join(available) or '-'})")
+
+
+class ChatsViewMissing(LineError):
+    """The LINE tab is not rendering the chats list, so rooms cannot be read.
+
+    Raised instead of returning an empty room list, because an empty result is
+    indistinguishable from "this account has no rooms".
+    """

@@ -1,8 +1,11 @@
 """Headless QR login flow decisions (no browser, no real Tk)."""
 
+import logging
+
 import pytest
 
-from line_ext_msg.domain.errors import QrDialogFailed
+from line_ext_msg.domain.errors import AppNotReady, LoginRequired, QrDialogFailed
+from line_ext_msg.output.progress import Steps
 from line_ext_msg.service import readiness
 from tests.helpers import make_settings
 
@@ -87,12 +90,22 @@ class _Dialog:
         self.finished = (state, keep_png)
 
 
+class _ClosedDialog(_Dialog):
+    """A dialog the user already closed, so the wait ends on the next round."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._alive = False
+
+
 class _Client:
     def __init__(self, page, settings):
         self._page = page
         self.settings = settings
         self._context = None
         self._browser = None
+        # Mirrors LineClient: the checklist silence follows settings.quiet.
+        self._steps = Steps(readiness.TOTAL_STEPS, quiet=settings.quiet)
 
 
 @pytest.fixture(autouse=True)
@@ -344,3 +357,213 @@ def test_ensure_headed_switches_when_headless(monkeypatch):
     client = _Client(_Page(), make_settings(headless=True))
     assert readiness._ensure_headed(client) is True
     assert calls == [False]
+
+
+def _patch_startup(monkeypatch, logged_in: bool, reason: str) -> None:
+    """Stub the four startup checks so run() reaches the login decision."""
+    monkeypatch.setattr(readiness.chrome, "is_debug_ready", lambda s, timeout_sec=2: True)
+    monkeypatch.setattr(readiness.session, "connect", lambda s: (None, None, None))
+    monkeypatch.setattr(readiness.session, "check_installed", lambda ctx, s, b: (True, "ok"))
+    monkeypatch.setattr(readiness.session, "ensure_line_page", lambda ctx, s, b: _Page())
+    monkeypatch.setattr(readiness.session, "wait_ready", lambda page, settings: "ready")
+    monkeypatch.setattr(readiness.auth, "check_login",
+                        lambda page, timeout_ms: (logged_in, reason))
+
+
+def _stub_qr_login(monkeypatch, outcome: str, calls: list) -> None:
+    monkeypatch.setattr(readiness, "_qr_login", lambda client: calls.append("qr") or outcome)
+
+
+def _stub_chats_view(monkeypatch, result: str, calls: list) -> None:
+    monkeypatch.setattr(readiness.session, "ensure_chats_view",
+                        lambda page, settings: calls.append(result) or result)
+
+
+def test_should_wait_defaults_to_true():
+    assert readiness._should_wait(None) is True
+    assert readiness._should_wait(True) is True
+    assert readiness._should_wait(False) is False
+
+
+def test_run_waits_for_login_by_default_even_when_quiet(monkeypatch):
+    _patch_startup(monkeypatch, logged_in=False, reason="login")
+    calls: list = []
+    _stub_qr_login(monkeypatch, "cancel", calls)
+    # quiet=True only silences the checklist: the wait still happens.
+    client = _Client(_Page(), make_settings(quiet=True))
+    with pytest.raises(LoginRequired):
+        readiness.run(client)
+    assert calls == ["qr"]
+
+
+def test_run_fails_fast_when_wait_for_login_is_false(monkeypatch):
+    _patch_startup(monkeypatch, logged_in=False, reason="login")
+    calls: list = []
+    _stub_qr_login(monkeypatch, "cancel", calls)
+    client = _Client(_Page(), make_settings(quiet=True))
+    with pytest.raises(LoginRequired):
+        readiness.run(client, wait_for_login=False)
+    assert calls == []
+
+
+def test_run_does_not_wait_when_the_login_budget_is_zero(monkeypatch):
+    _patch_startup(monkeypatch, logged_in=False, reason="login")
+    calls: list = []
+    _stub_qr_login(monkeypatch, "cancel", calls)
+    client = _Client(_Page(), make_settings(quiet=True, login_wait_ms=0))
+    with pytest.raises(LoginRequired):
+        readiness.run(client)
+    assert calls == []
+
+
+def test_run_does_not_wait_when_selectors_do_not_match(monkeypatch, caplog):
+    _patch_startup(monkeypatch, logged_in=False, reason="unknown")
+    calls: list = []
+    _stub_qr_login(monkeypatch, "cancel", calls)
+    # An unknown reason means the selectors missed, not that a login is
+    # pending, so no QR dialog and the mismatch is reported instead.
+    client = _Client(_Page(), make_settings(quiet=False))
+    with caplog.at_level(logging.INFO):
+        with pytest.raises(LoginRequired):
+            readiness.run(client)
+    assert calls == []
+    assert "known selectors" in caplog.text
+
+
+def test_run_returns_after_a_successful_wait(monkeypatch):
+    _patch_startup(monkeypatch, logged_in=False, reason="login")
+    calls: list = []
+    _stub_qr_login(monkeypatch, "ok", calls)
+    client = _Client(_Page(), make_settings(quiet=True))
+    steps = readiness.run(client)
+    assert calls == ["qr"]
+    assert steps[-1].name == "Logged in"
+    assert steps[-1].passed is True
+
+
+def test_run_checks_the_chats_view_after_a_login_wait(monkeypatch):
+    """LINE lands on its own view after auth, so the route has to be
+    re-checked once logged in, not only before the login screen."""
+    _patch_startup(monkeypatch, logged_in=False, reason="login")
+    _stub_qr_login(monkeypatch, "ok", [])
+    chats: list = []
+    _stub_chats_view(monkeypatch, "navigated", chats)
+    client = _Client(_Page(), make_settings(quiet=True))
+    readiness.run(client)
+    assert chats == ["navigated"]
+
+
+def test_run_checks_the_chats_view_when_already_logged_in(monkeypatch):
+    _patch_startup(monkeypatch, logged_in=True, reason="chat")
+    chats: list = []
+    _stub_chats_view(monkeypatch, "already", chats)
+    client = _Client(_Page(), make_settings(quiet=True))
+    readiness.run(client)
+    assert chats == ["already"]
+
+
+def test_run_does_not_raise_when_the_chats_view_cannot_be_reached(monkeypatch, caplog):
+    """status() still passes so an embedding app can poll it; list_rooms is
+    the call that refuses to read a page that is not the chats view."""
+    _patch_startup(monkeypatch, logged_in=True, reason="chat")
+    _stub_chats_view(monkeypatch, "failed", [])
+    client = _Client(_Page(), make_settings(quiet=True))
+    with caplog.at_level(logging.WARNING):
+        steps = readiness.run(client)
+    assert steps[-1].passed is True
+    assert "could not reach the chats view" in caplog.text
+
+
+def _script_login(monkeypatch, reasons, cap=200):
+    """check_login replays a reason sequence, repeating the last one.
+
+    The cap turns a wait loop that never reaches its exit condition into a
+    failure instead of a hung test run.
+    """
+    script = list(reasons)
+    calls = {"n": 0}
+
+    def fake_check_login(page, timeout_ms=0):
+        calls["n"] += 1
+        if calls["n"] > cap:
+            raise AssertionError("check_login polled too often: the loop never ended")
+        reason = script.pop(0) if len(script) > 1 else script[0]
+        return reason == "chat", reason
+
+    monkeypatch.setattr(readiness.auth, "check_login", fake_check_login)
+
+
+def test_qr_login_recovers_when_line_lands_on_another_view(monkeypatch):
+    """The reported bug: after the PIN step the page matched neither the login
+    screen nor the chats list, and the loop spun until the dialog was closed."""
+    _script_login(monkeypatch, ["login", "login", "unknown", "unknown",
+                                "unknown", "unknown", "chat"])
+    chats: list = []
+    _stub_chats_view(monkeypatch, "navigated", chats)
+    client = _Client(_Page(), make_settings())
+    assert readiness._qr_login(client) == "ok"
+    assert chats == ["navigated"]
+
+
+def test_qr_login_gives_up_instead_of_spinning(monkeypatch):
+    _script_login(monkeypatch, ["unknown"])
+    _stub_chats_view(monkeypatch, "already", [])
+    client = _Client(_Page(), make_settings())
+    # The dialog is still open (alive), so only the give-up path can end this.
+    assert readiness._qr_login(client) == "stuck"
+
+
+def test_qr_login_bounds_the_number_of_reloads(monkeypatch):
+    """A page that never recovers must not reload the SPA forever."""
+    _script_login(monkeypatch, ["unknown"])
+    chats: list = []
+    _stub_chats_view(monkeypatch, "already", chats)
+    client = _Client(_Page(), make_settings())
+    assert readiness._qr_login(client) == "stuck"
+    assert len(chats) == readiness._UNKNOWN_RECOVERIES
+
+
+def test_qr_login_stops_when_the_reload_reports_failure(monkeypatch):
+    _script_login(monkeypatch, ["unknown"])
+    chats: list = []
+    _stub_chats_view(monkeypatch, "failed", chats)
+    client = _Client(_Page(), make_settings())
+    assert readiness._qr_login(client) == "stuck"
+    assert chats == ["failed"]
+
+
+def test_qr_login_does_not_reload_while_the_login_screen_is_up(monkeypatch):
+    """A reload here would throw away a half-entered PIN."""
+    monkeypatch.setattr(readiness.qr, "QrDialog", _ClosedDialog)
+    _script_login(monkeypatch, ["login", "login", "login", "login", "login",
+                                "login", "login", "login", "login", "login"])
+    chats: list = []
+    _stub_chats_view(monkeypatch, "already", chats)
+    client = _Client(_Page(), make_settings())
+    assert readiness._qr_login(client) == "cancel"
+    assert chats == []
+
+
+def test_qr_login_grace_resets_when_the_login_screen_returns(monkeypatch):
+    """Rounds on the login screen must not add up towards the give-up.
+
+    Eighteen unclassified rounds are spread across login rounds, so without a
+    reset the loop would have given up long before reaching the final 'chat'.
+    One recovery is expected: the four trailing unknowns are consecutive.
+    """
+    reasons = ["unknown", "unknown", "login"] * 6 + ["unknown"] * 4 + ["chat"]
+    _script_login(monkeypatch, reasons)
+    chats: list = []
+    _stub_chats_view(monkeypatch, "already", chats)
+    client = _Client(_Page(), make_settings())
+    assert readiness._qr_login(client) == "ok"
+    assert len(chats) == 1
+
+
+def test_run_reports_an_unmatched_page_as_app_not_ready(monkeypatch):
+    _patch_startup(monkeypatch, logged_in=False, reason="login")
+    _stub_qr_login(monkeypatch, "stuck", [])
+    client = _Client(_Page(), make_settings(quiet=True))
+    with pytest.raises(AppNotReady) as err:
+        readiness.run(client)
+    assert "--dump" in str(err.value)

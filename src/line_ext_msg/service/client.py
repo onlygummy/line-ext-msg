@@ -8,7 +8,7 @@ Typical use (also the shape MCP tools wrap)::
         msgs = line.get_messages("Family", limit=5)
         msgs.save("messages.json")
 
-Queries return results only; saving, media download, and session wiping
+Queries return results only; saving, media download, and logging out
 are separate, explicit calls.
 """
 
@@ -64,11 +64,21 @@ class LineClient:
 
     def status(self, wait_for_login: bool | None = None,
                login_timeout_ms: int | None = None) -> list[StepResult]:
-        """Run the 5 readiness checks. Raises typed LineError on first failure."""
+        """Run the 5 readiness checks. Raises typed LineError on first failure.
+
+        wait_for_login defaults to True for every caller, so a login screen
+        shows the QR dialog and waits instead of raising straight away. Pass
+        wait_for_login=False to fail fast, which is what a headless service
+        or an MCP server wants. settings.quiet only silences the checklist.
+        """
         return _readiness.run(self, wait_for_login, login_timeout_ms)
 
     def _ready_page(self):
-        """Page guaranteed ready; runs status() once, then reuses the session."""
+        """Page guaranteed ready; runs status() once, then reuses the session.
+
+        The implicit status() call inherits the waiting default, so the first
+        query of a client that is not logged in yet opens the QR dialog.
+        """
         if self._page is None:
             self.status()
         assert self._page is not None
@@ -130,16 +140,23 @@ class LineClient:
         return Report(asdict(r) for r in self.list_rooms(unread_only=True))
 
     def unread_full(self, date: str | None = None, limit_per_room: int = 20) -> Report:
-        """Unread rooms with their messages. date=None means today (local)."""
+        """Unread rooms with their messages. date=None means today (local).
+
+        Each entry carries "truncated": true when the backfill scroll hit its
+        time budget, which means older messages of that day may be missing.
+        """
         from datetime import date as _date
         day = date or _date.today().isoformat()
         out = Report()
         unread = self.list_rooms(unread_only=True)
         for i, room in enumerate(unread):
             logger.info("unread room %d/%d: %s", i + 1, len(unread), room.name)
-            _rooms.open_room(self._ready_page(), room, self.list_rooms(), self.settings)
+            # Pass the list we already have: re-reading it per room scrolls the
+            # whole chat list again for every room.
+            _rooms.open_room(self._ready_page(), room, unread, self.settings)
             msgs = self.get_messages(limit=limit_per_room, date=day)
-            out.append({"room": asdict(room), "messages": [asdict(m) for m in msgs]})
+            out.append({"room": asdict(room), "messages": [asdict(m) for m in msgs],
+                        "truncated": msgs.scroll_stop == "budget"})
         return out
 
     def search_all(
@@ -150,9 +167,14 @@ class LineClient:
         rooms: list[int | str | Room] | None = None,
         limit_per_room: int = 100,
     ) -> Report:
-        """Search keyword across rooms. Returns only rooms with matches.
+        """Search keyword across rooms. Sequential, one room at a time.
 
-        Sequential (one room at a time); cost ~ seconds per room.
+        Returns rooms that matched, each entry carrying "truncated": true when
+        the backfill scroll hit its time budget before the older edge. Such a
+        room is listed even when it matched nothing, because a partial scan
+        cannot claim a keyword is absent; an empty "messages" with
+        "truncated": true means "not reached", not "not there". Raise
+        settings.search_scroll_ms to finish those rooms.
         """
         targets: list[Room] = list(self.list_rooms())
         if rooms is not None:
@@ -164,14 +186,24 @@ class LineClient:
                     continue
             targets = wanted
         out = Report()
+        partial: list[str] = []
         for i, room in enumerate(targets):
             logger.info("searching room %d/%d: %s", i + 1, len(targets), room.name)
-            _rooms.open_room(self._ready_page(), room, self.list_rooms(), self.settings)
+            _rooms.open_room(self._ready_page(), room, targets, self.settings)
             msgs = self.get_messages(
                 limit=limit_per_room, date_from=date_from, date_to=date_to, keyword=keyword,
             )
-            if msgs:
-                out.append({"room": asdict(room), "messages": [asdict(m) for m in msgs]})
+            truncated = msgs.scroll_stop == "budget"
+            if truncated:
+                partial.append(room.name)
+            if msgs or truncated:
+                out.append({"room": asdict(room), "messages": [asdict(m) for m in msgs],
+                            "truncated": truncated})
+        if partial:
+            logger.warning(
+                "%d room(s) hit the scroll budget before the older edge, so their "
+                "results are partial (raise LINE_EXT_MSG_SEARCH_SCROLL_MS): %s",
+                len(partial), ", ".join(partial))
         return out
 
     # -- debugging helpers --------------------------------------------
@@ -186,11 +218,12 @@ class LineClient:
         room, html = _diagnostics.read_room(self, ref)
         return Dom(html, room=room)
 
-    def clear_session(self, backup: bool = True) -> dict:
-        """Wipe the LINE session only; extension install stays.
+    def logout(self, backup: bool = True) -> dict:
+        """Log out of LINE by wiping the session; extension install stays.
 
         backup=True saves a redacted probe to session/ first. Stops debug
-        Chrome before the on-disk wipe, so the next run pops headed QR.
+        Chrome before the on-disk wipe, so the next status() finds no session
+        and shows the QR dialog again.
         """
         summary: dict = {}
         if backup:
@@ -200,7 +233,7 @@ class LineClient:
                     self.status(wait_for_login=False)
                 except Exception:
                     pass
-                summary["backup"] = self.probe_session().save(paths.PROBE_BEFORE_CLEAR_JSON)
+                summary["backup"] = self.probe_session().save(paths.PROBE_BEFORE_LOGOUT_JSON)
             except Exception as e:
                 summary["backup_error"] = str(e)[:120]
         try:

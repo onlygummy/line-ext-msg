@@ -8,13 +8,14 @@ hash itself.
 SELECTORS = {
     # Left nav button that routes to the chats view.
     "nav_chat": "button[aria-label='Chat']",
-    # Room rows (chats view first, friends as fallback).
-    "room_list": "[class*='chatlist-module__chatlist'], [class*='friendlist-module__list']",
-    "room_item": "[class*='chatlistItem-module__chatlist_item'], [class*='friendlistItem-module__item']",
-    "room_name": "[class*='chatlistItem-module__text'], [class*='friendlistItem-module__text']",
+    # Room rows. Chats view only: a union with the friends list made the
+    # scraper read friend names as rooms without saying so.
+    "room_list": "[class*='chatlist-module__chatlist']",
+    "room_item": "[class*='chatlistItem-module__chatlist_item']",
+    "room_name": "[class*='chatlistItem-module__text']",
     "room_open": "button[aria-label='Go chatroom']",
-    "room_unread": "[class*='chatlistItem-module__message_count'], [class*='friendlistItem-module__badge']",
-    "room_preview": "[class*='chatlistItem-module__description'], [class*='friendlistItem-module__description']",
+    "room_unread": "[class*='chatlistItem-module__message_count']",
+    "room_preview": "[class*='chatlistItem-module__description']",
     "room_time": "[class*='chatlistItem-module__date']",
     # Message list: stable hash-free container (role=log).
     "message_list": "div.message_list",

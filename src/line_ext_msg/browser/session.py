@@ -14,6 +14,12 @@ from . import cdp
 logger = logging.getLogger(__name__)
 
 
+def _one_line(text) -> str:
+    """First line of a Playwright error; its call log spans many lines."""
+    lines = str(text).splitlines()
+    return lines[0] if lines else ""
+
+
 def _debug_dir(settings: Settings) -> str:
     from .process import expand
     return expand(settings.profile_dir)
@@ -110,24 +116,93 @@ def close_extension_tabs(settings: Settings) -> None:
             cdp.close_target(settings, target["id"])
 
 
+def _page_url(page: Page) -> str:
+    """Current URL, or '' when the page cannot report one."""
+    try:
+        return page.url or ""
+    except Exception:
+        return ""
+
+
+def _on_chats_route(page: Page) -> bool:
+    """True when the URL hash points at the chats route.
+
+    Compares the fragment path rather than the whole URL, so a route with a
+    parameter still matches. The hash says which route is set, never which
+    view the app mounted, so callers must confirm the DOM separately.
+    """
+    url = _page_url(page)
+    if "#" not in url:
+        return False
+    path = url.split("#", 1)[1].split("?", 1)[0]
+    return path == "/chats" or path.startswith("/chats/")
+
+
+def _chats_rendered(page: Page, settings: Settings) -> bool:
+    """True when the chat list has rows attached to the DOM."""
+    try:
+        page.wait_for_selector(SELECTORS["room_item"], state="attached",
+                               timeout=settings.chats_ensure_ms)
+        return True
+    except Exception:
+        return False
+
+
+def _click_nav_chat(page: Page, settings: Settings) -> None:
+    """Click the left nav chat button. Silently gives up when it is missing."""
+    try:
+        page.locator(SELECTORS["nav_chat"]).first.click(timeout=settings.chats_ensure_ms)
+    except Exception as e:
+        logger.debug("could not click the chat nav button: %s", _one_line(e))
+
+
+def _goto_chats_url(page: Page, settings: Settings) -> None:
+    """Load the chats URL and wait for the document. Never raises."""
+    try:
+        page.goto(settings.chats_url, timeout=settings.chats_ensure_ms)
+        page.wait_for_load_state("domcontentloaded", timeout=settings.chats_ensure_ms)
+    except Exception as e:
+        logger.debug("could not load %s: %s", settings.chats_url, _one_line(e))
+
+
 def goto_chats(page: Page, settings: Settings) -> None:
-    """Route the LINE tab to #/chats (direct URL, fallback: nav click)."""
-    try:
-        if (page.url or "").rstrip("/").endswith("#/chats"):
-            return
-    except Exception:
-        pass
-    try:
-        page.goto(settings.chats_url, timeout=10000)
-        page.wait_for_load_state("domcontentloaded", timeout=10000)
-    except Exception:
-        pass
-    try:
-        if (page.url or "").rstrip("/").endswith("#/chats"):
-            return
-        page.locator(SELECTORS["nav_chat"]).first.click(timeout=5000)
-    except Exception:
-        pass
+    """Point the LINE tab at the chats route without waiting for the chat list.
+
+    Deliberately cheap: this runs before login, where a chat list cannot render
+    yet. Once logged in use ensure_chats_view, which also confirms the DOM.
+    """
+    if _on_chats_route(page):
+        return
+    _goto_chats_url(page, settings)
+    if not _on_chats_route(page):
+        _click_nav_chat(page, settings)
+
+
+def ensure_chats_view(page: Page, settings: Settings) -> str:
+    """Make the chats view the rendered one, and report how it was reached.
+
+    Returns "already" when the route and the chat list were both fine,
+    "navigated" after loading the chats URL, "nav_click" after clicking the
+    nav button, and "failed" when neither produced a chat list. The URL alone
+    is never enough: LINE lands on its own view after auth, so the route can
+    say chats while a different view is mounted.
+    """
+    if not _on_chats_route(page):
+        _goto_chats_url(page, settings)
+        if _chats_rendered(page, settings):
+            logger.info("chats view: navigated, url=%s", _page_url(page))
+            return "navigated"
+    elif _chats_rendered(page, settings):
+        logger.info("chats view: already on it, url=%s", _page_url(page))
+        return "already"
+    # The route claims chats but no chat list rendered, so something else is
+    # mounted. The nav button is the only way to switch the view from here.
+    _click_nav_chat(page, settings)
+    if _chats_rendered(page, settings):
+        logger.info("chats view: switched with the nav button, url=%s", _page_url(page))
+        return "nav_click"
+    logger.warning("no chat list after navigating, url=%s", _page_url(page))
+    return "failed"
 
 
 def ensure_line_page(context: BrowserContext, settings: Settings, browser: Browser | None = None) -> Page:
@@ -165,12 +240,6 @@ def ensure_line_page(context: BrowserContext, settings: Settings, browser: Brows
     except Exception:
         pass
     return page
-
-
-def _one_line(text) -> str:
-    """First line of a Playwright error; its call log spans many lines."""
-    lines = str(text).splitlines()
-    return lines[0] if lines else ""
 
 
 def check_installed(context: BrowserContext, settings: Settings, browser: Browser | None = None) -> tuple[bool, str]:

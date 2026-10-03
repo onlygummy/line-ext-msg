@@ -55,6 +55,10 @@ class Messages(list):
     """list[Message] with the room it came from plus save and media helpers."""
 
     room: Room | None = None
+    # Why the backfill scroll stopped: 'need', 'top', 'date', 'budget',
+    # 'disabled', 'detached', or '' when no scroll ran. 'budget' means the
+    # scan stopped before the older edge, so the messages are partial.
+    scroll_stop: str = ""
 
     def save(self, path: str) -> str:
         payload: dict = {}
@@ -74,6 +78,7 @@ class Messages(list):
         """
         out = Messages()
         out.room = self.room
+        out.scroll_stop = self.scroll_stop
         for m in self:
             if m.type != "image" or not m.media_data:
                 out.append(m)

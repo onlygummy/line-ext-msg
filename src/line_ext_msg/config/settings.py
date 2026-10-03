@@ -30,8 +30,21 @@ class Settings:
     selector_ms: int = field(default_factory=lambda: _env_int("LINE_EXT_MSG_SELECTOR_MS", 15000))
     login_poll_ms: int = field(default_factory=lambda: _env_int("LINE_EXT_MSG_LOGIN_MS", 10000))
     login_wait_ms: int = field(default_factory=lambda: _env_int("LINE_EXT_MSG_LOGIN_WAIT_MS", 300000))
-    rooms_scroll_ms: int = field(default_factory=lambda: _env_int("LINE_EXT_MSG_ROOMS_SCROLL_MS", 4000))
+    rooms_scroll_ms: int = field(default_factory=lambda: _env_int("LINE_EXT_MSG_ROOMS_SCROLL_MS", 8000))
+    # How long to wait for the chat list to render when switching to the chats
+    # view after login. Separate from selector_ms because the login screen
+    # cannot render a chat list, so the wait only happens once logged in.
+    chats_ensure_ms: int = field(
+        default_factory=lambda: _env_int("LINE_EXT_MSG_CHATS_ENSURE_MS", 10000)
+    )
     messages_scroll_ms: int = field(default_factory=lambda: _env_int("LINE_EXT_MSG_MSGS_SCROLL_MS", 8000))
+    # A filtered query cannot know how many rows it needs, so it gets its own
+    # budget floor and only stops at the older edge, a date, or this timeout.
+    # Without it a keyword made the scan shallower than the same call without
+    # one, and a partial scan looked exactly like "no match".
+    search_scroll_ms: int = field(
+        default_factory=lambda: _env_int("LINE_EXT_MSG_SEARCH_SCROLL_MS", 60000)
+    )
     open_room_wait_ms: int = field(default_factory=lambda: _env_int("LINE_EXT_MSG_OPEN_MS", 3000))
     # How long a graceful CDP close may take before the force kill fallback.
     stop_graceful_ms: int = field(
@@ -44,7 +57,8 @@ class Settings:
     # QR dialog zoom. The QR canvas is small, so 2x is readable without the
     # blockiness of a larger nearest-neighbor zoom.
     qr_zoom: int = field(default_factory=lambda: _env_int("LINE_EXT_MSG_QR_ZOOM", 2))
-    # Title of the QR dialog window and its in-card header.
+    # Title of the QR dialog window. It shows in the title bar only; the card
+    # itself carries the status pill and no app name.
     dialog_title: str = field(
         default_factory=lambda: _env("LINE_EXT_MSG_DIALOG_TITLE", "LINE")
     )
@@ -60,6 +74,9 @@ class Settings:
     )
     debug_scroll: bool = field(
         default_factory=lambda: _env("LINE_EXT_MSG_DEBUG_SCROLL", "").lower() in ("1", "true", "yes")
+    )
+    debug_rooms: bool = field(
+        default_factory=lambda: _env("LINE_EXT_MSG_DEBUG_ROOMS", "").lower() in ("1", "true", "yes")
     )
 
     @property

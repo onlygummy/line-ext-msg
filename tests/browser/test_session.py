@@ -140,3 +140,89 @@ def test_check_installed_cleans_the_blocked_probe_message(monkeypatch):
     assert detail.startswith("probe failed: ")
     assert "\n" not in detail, "the Playwright call log must not leak into the detail"
     assert page.closed == 1
+
+
+class _ViewPage:
+    """Replays a route plus a chat list that appears after some navigation."""
+
+    def __init__(self, url, rows_after=(), rows_after_nav=()):
+        self.url = url
+        self.gotos = 0
+        self.nav_clicks = 0
+        self._rows_after = list(rows_after)
+        self._rows_after_nav = list(rows_after_nav)
+
+    def goto(self, url, timeout=0):
+        self.gotos += 1
+        self.url = url
+        self._rows_after = list(self._rows_after) or list(self._rows_after_nav)
+
+    def wait_for_load_state(self, *_a, **_k):
+        pass
+
+    def wait_for_selector(self, _sel, state=None, timeout=0):
+        if self._rows_after:
+            return True
+        if self._rows_after_nav and self.nav_clicks:
+            self._rows_after = list(self._rows_after_nav)
+            return True
+        raise RuntimeError("no rows yet")
+
+    def locator(self, _sel):
+        page = self
+
+        class _Nav:
+            @property
+            def first(self):
+                return self
+
+            def click(self, timeout=0):
+                page.nav_clicks += 1
+
+        return _Nav()
+
+
+def test_on_chats_route_matches_a_route_with_a_parameter():
+    page = _ViewPage("chrome-extension://x/index.html#/chats/123")
+    assert session._on_chats_route(page) is True
+
+
+def test_on_chats_route_rejects_other_routes():
+    assert session._on_chats_route(_ViewPage("chrome-extension://x/index.html#/friends")) is False
+    assert session._on_chats_route(_ViewPage("chrome-extension://x/index.html")) is False
+
+
+def test_ensure_chats_view_already():
+    page = _ViewPage("chrome-extension://x/index.html#/chats", rows_after=["r1"])
+    assert session.ensure_chats_view(page, make_settings()) == "already"
+    assert page.gotos == 0
+    assert page.nav_clicks == 0
+
+
+def test_ensure_chats_view_navigates_from_another_route():
+    page = _ViewPage("chrome-extension://x/index.html#/friends", rows_after=["r1"])
+    assert session.ensure_chats_view(page, make_settings()) == "navigated"
+    assert page.gotos == 1
+    assert page.nav_clicks == 0
+
+
+def test_ensure_chats_view_clicks_nav_when_the_route_lies():
+    """The route says chats but nothing rendered: this is the case a URL
+    check alone cannot catch, and the one LINE caused after login."""
+    page = _ViewPage("chrome-extension://x/index.html#/chats", rows_after_nav=["r1"])
+    assert session.ensure_chats_view(page, make_settings()) == "nav_click"
+    assert page.gotos == 0
+    assert page.nav_clicks == 1
+
+
+def test_ensure_chats_view_fails_when_nothing_renders():
+    page = _ViewPage("chrome-extension://x/index.html#/friends")
+    assert session.ensure_chats_view(page, make_settings()) == "failed"
+
+
+def test_goto_chats_does_not_wait_for_the_chat_list():
+    """It runs before login, where the list cannot render yet, so it must
+    neither block on the selector nor report a failure."""
+    page = _ViewPage("chrome-extension://x/index.html#/friends")
+    session.goto_chats(page, make_settings())
+    assert page.gotos == 1
