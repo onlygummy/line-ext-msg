@@ -206,15 +206,33 @@ def _row_by_mid(rows: list, mid: str):
     return None
 
 
+def _find_row(page: Page, room: Room, settings: Settings):
+    """DOM row for a room, or None when it is not rendered right now.
+
+    data-mid is the only safe key, because it names the same conversation on
+    every render. The list position does not: a virtualized list scrolls and
+    re-renders, so the same index holds a different room once anything moves.
+    The positional fallback therefore applies only to a room that carries no
+    id at all, where there is nothing better to go on.
+    """
+    rows = _named_rows(page)
+    if room.id:
+        row = _row_by_mid(rows, room.id)
+        if row is not None:
+            return row
+        # The room is known but the list has it off-screen. One bounded scroll
+        # brings the list back before looking a second time; it stops as soon
+        # as the row count settles, so this costs nothing in the common case.
+        _scroll_to_load(page, settings)
+        return _row_by_mid(_named_rows(page), room.id)
+    logger.debug("room %r has no data-mid, falling back to its list position", room.name)
+    return rows[room.index][0] if room.index < len(rows) else None
+
+
 def open_room(page: Page, ref: int | str | Room, rooms: list[Room], settings: Settings) -> Room:
     """Click a room's Go-chatroom button, wait until chat content shows."""
     room = resolve_ref(ref, rooms)
-    rows = _named_rows(page)
-    # data-mid is stable across re-renders, so it beats the list position: the
-    # virtualized list shifts rows around while a room is being opened.
-    row = _row_by_mid(rows, room.id)
-    if row is None and room.index < len(rows):
-        row = rows[room.index][0]
+    row = _find_row(page, room, settings)
     if row is None:
         raise RoomNotFound(ref, [r.name for r in rooms])
     try:

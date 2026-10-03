@@ -266,3 +266,42 @@ def test_open_room_reports_a_row_without_the_chat_button():
     known = [Room(index=0, id="m1", name="Family")]
     with pytest.raises(RoomNotFound):
         rooms.open_room(cast(Page, page), known[0], known, _settings())
+
+
+def test_open_room_refuses_a_position_fallback_when_the_id_is_known():
+    """The row for a known data-mid is off-screen, so index 0 now holds a
+    different conversation. Clicking it would read the wrong room silently."""
+    rows = [_Row("mX", {"name": "Someone else"})]
+    page = _FakePage(rows=rows)
+    known = [Room(index=0, id="m1", name="Family")]
+    with pytest.raises(RoomNotFound):
+        rooms.open_room(cast(Page, page), known[0], known, _settings())
+    assert rows[0].clicks == 0, "must not open a room just because it sits at that index"
+
+
+def test_open_room_scrolls_the_list_when_the_id_is_not_rendered(monkeypatch):
+    """The target is off-screen on the first look and the scroll brings it
+    back, so the room opens instead of failing."""
+    target = _Row("m1", {"name": "Family"})
+    other = _Row("mX", {"name": "Someone else"})
+    page = _FakePage(rows=[other])
+
+    def fake_scroll(pg, _settings):
+        pg._rows.append(target)
+
+    monkeypatch.setattr(rooms, "_scroll_to_load", fake_scroll)
+    known = [Room(index=0, id="m1", name="Family")]
+    found = rooms.open_room(cast(Page, page), known[0], known, _settings())
+    assert found.name == "Family"
+    assert target.clicks == 1
+    assert other.clicks == 0
+
+
+def test_open_room_falls_back_to_position_without_an_id():
+    """A row with no data-mid leaves the position as the only option, so the
+    fallback has to stay for those."""
+    rows = [_Row("m1", {"name": "Family"})]
+    page = _FakePage(rows=rows)
+    known = [Room(index=0, id="", name="Family")]
+    rooms.open_room(cast(Page, page), known[0], known, _settings())
+    assert rows[0].clicks == 1
