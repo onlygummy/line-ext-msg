@@ -79,3 +79,41 @@ def test_dialog_title_env_override():
 
 def test_dialog_title_constructor_override():
     assert Settings(dialog_title="Inbox").dialog_title == "Inbox"
+
+
+def test_qr_zoom_in_range_is_left_alone():
+    for zoom in (1, 2, 3, 4):
+        assert Settings(qr_zoom=zoom).qr_zoom == zoom
+
+
+def test_qr_zoom_below_range_is_clamped_up():
+    """Tk's PhotoImage.zoom rejects these, and the viewer process runs with
+    stderr discarded, so an unclamped value would be a blank silent dialog."""
+    assert Settings(qr_zoom=0).qr_zoom == 1
+    assert Settings(qr_zoom=-3).qr_zoom == 1
+
+
+def test_qr_zoom_above_range_is_clamped_down():
+    assert Settings(qr_zoom=99).qr_zoom == 4
+
+
+def test_scroll_cap_default_is_five_minutes():
+    """The value the code used to hardcode in two places."""
+    old = os.environ.pop("LINE_EXT_MSG_SCROLL_CAP_MS", None)
+    try:
+        assert Settings().scroll_cap_ms == 300000
+    finally:
+        if old is not None:
+            os.environ["LINE_EXT_MSG_SCROLL_CAP_MS"] = old
+
+
+def test_scroll_cap_env_override():
+    old = os.environ.get("LINE_EXT_MSG_SCROLL_CAP_MS")
+    os.environ["LINE_EXT_MSG_SCROLL_CAP_MS"] = "900000"
+    try:
+        assert Settings().scroll_cap_ms == 900000
+    finally:
+        if old is None:
+            del os.environ["LINE_EXT_MSG_SCROLL_CAP_MS"]
+        else:
+            os.environ["LINE_EXT_MSG_SCROLL_CAP_MS"] = old

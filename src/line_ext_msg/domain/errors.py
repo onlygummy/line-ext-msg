@@ -25,6 +25,17 @@ class LoginRequired(LineError):
     """Login screen is showing; user must log in first."""
 
 
+class LoginTimeout(LoginRequired):
+    """The login screen was up and the bounded wait ran out before it finished.
+
+    A LoginRequired subclass on purpose, so code that already catches
+    LoginRequired keeps working. Catch this one first when the two cases need
+    different handling: a plain LoginRequired means no session is stored at
+    all, while a LoginTimeout means a session is needed but nobody finished
+    the QR or PIN step inside login_timeout_ms.
+    """
+
+
 class QrDialogFailed(LineError):
     """The QR dialog process could not be started; headless login cannot continue."""
 

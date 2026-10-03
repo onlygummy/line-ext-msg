@@ -4,7 +4,12 @@ import logging
 
 import pytest
 
-from line_ext_msg.domain.errors import AppNotReady, LoginRequired, QrDialogFailed
+from line_ext_msg.domain.errors import (
+    AppNotReady,
+    LoginRequired,
+    LoginTimeout,
+    QrDialogFailed,
+)
 from line_ext_msg.output.progress import Steps
 from line_ext_msg.service import readiness
 from tests.helpers import make_settings
@@ -65,12 +70,26 @@ class _Dialog:
         self.updated = []
         self.qr_shows = []
         self.pins = []
+        self.verifying = []
+        self.resumed = []
         self.finished = None
+        # Every lifecycle call in order, so a test can assert the sequence the
+        # dialog walks rather than just the calls that happened.
+        self.calls: list[str] = []
         self._alive = True
         _Dialog.instances.append(self)
 
     def open(self, data_uri):
         self.opened = data_uri
+        self.calls.append("open")
+
+    def set_verifying(self):
+        self.verifying.append(True)
+        self.calls.append("verifying")
+
+    def resume(self):
+        self.resumed.append(True)
+        self.calls.append("resume")
 
     def show_qr(self, data_uri):
         self.qr_shows.append(data_uri)
@@ -82,12 +101,14 @@ class _Dialog:
 
     def set_pin(self, pin, desc=""):
         self.pins.append((pin, desc))
+        self.calls.append("pin")
 
     def alive(self):
         return self._alive
 
     def finish(self, state="cancel", keep_png=False):
         self.finished = (state, keep_png)
+        self.calls.append(f"finish:{state}")
 
 
 class _ClosedDialog(_Dialog):
@@ -104,8 +125,12 @@ class _Client:
         self.settings = settings
         self._context = None
         self._browser = None
-        # Mirrors LineClient: the checklist silence follows settings.quiet.
+        # Mirrors LineClient: the checklist silence follows settings.quiet,
+        # and the login UI callbacks default to the Tk dialog.
         self._steps = Steps(readiness.TOTAL_STEPS, quiet=settings.quiet)
+        self.on_qr = None
+        self.on_pin = None
+        self.on_status = None
 
 
 @pytest.fixture(autouse=True)
@@ -256,7 +281,7 @@ def test_qr_login_cancel_when_dialog_closed(monkeypatch):
     monkeypatch.setattr(_Dialog, "alive", dead)
     client = _Client(_Page(), make_settings())
     assert readiness._qr_login(client) == "cancel"
-    assert _Dialog.instances[-1].finished == ("cancel", False)
+    assert _Dialog.instances[-1].finished == ("cancelled", False)
 
 
 def test_qr_login_refreshes_changed_qr(monkeypatch):
@@ -291,7 +316,8 @@ def test_qr_login_raises_when_dialog_cannot_open(monkeypatch):
     client = _Client(_Page(), make_settings())
     with pytest.raises(QrDialogFailed):
         readiness._qr_login(client)
-    assert _Dialog.instances[-1].finished == ("cancel", True)
+    # failed, not cancelled: the user closed nothing.
+    assert _Dialog.instances[-1].finished == ("failed", True)
 
 
 def test_install_extension_success_returns_to_headless(monkeypatch):
@@ -371,7 +397,16 @@ def _patch_startup(monkeypatch, logged_in: bool, reason: str) -> None:
 
 
 def _stub_qr_login(monkeypatch, outcome: str, calls: list) -> None:
-    monkeypatch.setattr(readiness, "_qr_login", lambda client: calls.append("qr") or outcome)
+    """Replace the QR wait, recording the timeout it was handed.
+
+    Recording timeout_ms is the point: run() has to pass the budget through,
+    since a stub that ignored it would let that plumbing rot unnoticed.
+    """
+    def _fake(client, timeout_ms=None, on_qr=None, on_pin=None, on_status=None):
+        calls.append(timeout_ms)
+        return outcome
+
+    monkeypatch.setattr(readiness, "_qr_login", _fake)
 
 
 def _stub_chats_view(monkeypatch, result: str, calls: list) -> None:
@@ -393,7 +428,32 @@ def test_run_waits_for_login_by_default_even_when_quiet(monkeypatch):
     client = _Client(_Page(), make_settings(quiet=True))
     with pytest.raises(LoginRequired):
         readiness.run(client)
-    assert calls == ["qr"]
+    assert calls == [300000]
+
+
+def test_run_hands_the_login_timeout_to_the_qr_wait(monkeypatch):
+    """login_timeout_ms used to reach only the headed fallback, so the QR
+    dialog itself was bounded by nothing."""
+    _patch_startup(monkeypatch, logged_in=False, reason="login")
+    calls: list = []
+    _stub_qr_login(monkeypatch, "cancel", calls)
+    client = _Client(_Page(), make_settings(quiet=True))
+    with pytest.raises(LoginRequired):
+        readiness.run(client, login_timeout_ms=180000)
+    assert calls == [180000]
+
+
+def test_run_reports_a_timed_out_login_as_login_timeout(monkeypatch):
+    _patch_startup(monkeypatch, logged_in=False, reason="login")
+    _stub_qr_login(monkeypatch, "timeout", [])
+    client = _Client(_Page(), make_settings(quiet=True))
+    with pytest.raises(LoginTimeout):
+        readiness.run(client, login_timeout_ms=1000)
+
+
+def test_login_timeout_is_catchable_as_login_required():
+    """The subclassing is the whole point: existing handlers keep working."""
+    assert issubclass(LoginTimeout, LoginRequired)
 
 
 def test_run_fails_fast_when_wait_for_login_is_false(monkeypatch):
@@ -436,7 +496,7 @@ def test_run_returns_after_a_successful_wait(monkeypatch):
     _stub_qr_login(monkeypatch, "ok", calls)
     client = _Client(_Page(), make_settings(quiet=True))
     steps = readiness.run(client)
-    assert calls == ["qr"]
+    assert calls == [300000]
     assert steps[-1].name == "Logged in"
     assert steps[-1].passed is True
 
@@ -567,3 +627,300 @@ def test_run_reports_an_unmatched_page_as_app_not_ready(monkeypatch):
     with pytest.raises(AppNotReady) as err:
         readiness.run(client)
     assert "--dump" in str(err.value)
+
+
+def _fake_clock(monkeypatch, step_ms: float = 1.0):
+    """Replace time.monotonic with a deterministic advancing clock.
+
+    The wait loop does no real sleeping, so wall-clock time barely moves while
+    it spins. Without this the deadline would be untestable.
+    """
+    ticks = {"n": 0}
+
+    def fake_monotonic():
+        ticks["n"] += 1
+        return ticks["n"] * step_ms / 1000.0
+
+    monkeypatch.setattr(readiness.time, "monotonic", fake_monotonic)
+    return ticks
+
+
+def test_qr_login_gives_up_when_the_timeout_expires(monkeypatch):
+    """The QR wait used to have no deadline: only a human closing the dialog
+    or an unmatched page could end it. login_timeout_ms never reached here."""
+    _fake_clock(monkeypatch)
+    # cap=200 in _script_login turns a missing deadline into a failed assertion
+    # rather than a hung test run.
+    _script_login(monkeypatch, ["login"])
+    _stub_chats_view(monkeypatch, "already", [])
+    client = _Client(_Page(), make_settings())
+    assert readiness._qr_login(client, 5) == "timeout"
+
+
+def test_qr_login_closes_the_dialog_after_a_timeout(monkeypatch):
+    """The viewer subprocess must not be left behind when the wait ends."""
+    _fake_clock(monkeypatch)
+    _script_login(monkeypatch, ["login"])
+    _stub_chats_view(monkeypatch, "already", [])
+    client = _Client(_Page(), make_settings())
+    readiness._qr_login(client, 5)
+    assert _Dialog.instances[0].finished == ("failed", False)
+
+
+def test_qr_login_without_a_timeout_still_ends_on_success(monkeypatch):
+    """None keeps the old unbounded behaviour for callers that want it."""
+    _script_login(monkeypatch, ["login", "chat"])
+    _stub_chats_view(monkeypatch, "already", [])
+    client = _Client(_Page(), make_settings())
+    assert readiness._qr_login(client) == "ok"
+
+
+def test_qr_login_hands_the_qr_to_the_host_instead_of_a_dialog(monkeypatch):
+    seen: list = []
+    _script_login(monkeypatch, ["login", "chat"])
+    _stub_chats_view(monkeypatch, "already", [])
+    client = _Client(_Page(), make_settings())
+    assert readiness._qr_login(client, on_qr=seen.append) == "ok"
+    assert seen == [_URI]
+    # No viewer process at all: that is the point on a machine with no desktop.
+    assert _Dialog.instances == []
+
+
+def test_qr_login_hands_the_pin_to_the_host(monkeypatch):
+    pins: list = []
+    _script_login(monkeypatch, ["login", "login", "chat"])
+    monkeypatch.setattr(readiness, "_login_pin", lambda page: ("5239", "type it on the phone"))
+    _stub_chats_view(monkeypatch, "already", [])
+    client = _Client(_Page(), make_settings())
+    assert readiness._qr_login(
+        client,
+        on_qr=lambda uri: None,
+        on_pin=lambda pin, desc: pins.append((pin, desc)),
+    ) == "ok"
+    assert pins == [("5239", "type it on the phone")] * 2
+
+
+def test_qr_login_suppresses_the_dialog_for_a_pin_only_host(monkeypatch):
+    """Either callback replaces the dialog, so a server never pops a window."""
+    _script_login(monkeypatch, ["login", "chat"])
+    monkeypatch.setattr(readiness, "_login_pin", lambda page: ("5239", ""))
+    _stub_chats_view(monkeypatch, "already", [])
+    client = _Client(_Page(), make_settings())
+    assert readiness._qr_login(client, on_pin=lambda pin, desc: None) == "ok"
+    assert _Dialog.instances == []
+
+
+def test_qr_login_lets_the_host_cancel_on_the_first_qr(monkeypatch):
+    _script_login(monkeypatch, ["login"])
+    _stub_chats_view(monkeypatch, "already", [])
+    client = _Client(_Page(), make_settings())
+    assert readiness._qr_login(client, on_qr=lambda uri: False) == "cancel"
+
+
+def test_qr_login_lets_the_host_cancel_from_the_pin(monkeypatch):
+    _script_login(monkeypatch, ["login"])
+    monkeypatch.setattr(readiness, "_login_pin", lambda page: ("5239", ""))
+    _stub_chats_view(monkeypatch, "already", [])
+    client = _Client(_Page(), make_settings())
+    assert readiness._qr_login(client, on_qr=lambda uri: None,
+                               on_pin=lambda pin, desc: False) == "cancel"
+
+
+def test_qr_login_survives_a_raising_callback(monkeypatch, caplog):
+    """A rendering bug in the host must not strand a login halfway through."""
+
+    def boom(uri):
+        raise RuntimeError("host is down")
+
+    _script_login(monkeypatch, ["login", "chat"])
+    _stub_chats_view(monkeypatch, "already", [])
+    client = _Client(_Page(), make_settings())
+    with caplog.at_level(logging.WARNING):
+        assert readiness._qr_login(client, on_qr=boom) == "ok"
+    assert "host is down" in caplog.text
+
+
+def test_run_passes_the_client_callbacks_to_the_qr_wait(monkeypatch):
+    """The callbacks live on the client so every entry point inherits them."""
+    _patch_startup(monkeypatch, logged_in=False, reason="login")
+    seen: dict = {}
+
+    def fake_qr_login(client, timeout_ms=None, on_qr=None, on_pin=None, on_status=None):
+        seen["timeout"] = timeout_ms
+        seen["on_qr"] = on_qr
+        seen["on_pin"] = on_pin
+        seen["on_status"] = on_status
+        return "cancel"
+
+    monkeypatch.setattr(readiness, "_qr_login", fake_qr_login)
+    host_qr = lambda uri: None  # noqa: E731
+    host_status = lambda state: None  # noqa: E731
+    client = _Client(_Page(), make_settings(quiet=True))
+    client.on_qr = host_qr
+    client.on_status = host_status
+    with pytest.raises(LoginRequired):
+        readiness.run(client, login_timeout_ms=5000)
+    assert seen == {"timeout": 5000, "on_qr": host_qr, "on_pin": None,
+                    "on_status": host_status}
+
+
+# -- the login state machine ------------------------------------------------
+
+
+def test_terminal_state_truth_table():
+    assert readiness._terminal_state(True, False, False) == "done"
+    assert readiness._terminal_state(False, True, False) == "failed"
+    assert readiness._terminal_state(False, False, True) == "failed"
+    assert readiness._terminal_state(False, False, False) == "cancelled"
+    # Logging in wins over any stale flag from an earlier round.
+    assert readiness._terminal_state(True, True, True) == "done"
+
+
+def test_terminal_state_names_match_the_dialog_copy():
+    """The two renderers share one vocabulary, so every terminal state the flow
+    can produce must exist in the table the viewer renders from."""
+    from line_ext_msg.service import qr
+
+    for logged, timed_out, stuck in [(True, False, False), (False, True, False),
+                                     (False, False, True), (False, False, False)]:
+        assert readiness._terminal_state(logged, timed_out, stuck) in qr.TERMINAL_STATES
+
+
+def test_unknown_puts_the_dialog_into_verifying(monkeypatch):
+    """Nothing the user can do at that point, so the dialog must stop asking."""
+    _script_login(monkeypatch, ["login", "unknown", "chat"])
+    _stub_chats_view(monkeypatch, "already", [])
+    client = _Client(_Page(), make_settings())
+    assert readiness._qr_login(client) == "ok"
+    assert _Dialog.instances[0].verifying == [True]
+
+
+def test_a_recovered_login_screen_puts_the_pin_back(monkeypatch):
+    """One unknown can be a rendering hiccup, so the previous step returns."""
+    _script_login(monkeypatch, ["login", "unknown", "login", "chat"])
+    monkeypatch.setattr(readiness, "_login_pin", lambda page: ("5239", ""))
+    _stub_chats_view(monkeypatch, "already", [])
+    client = _Client(_Page(), make_settings())
+    assert readiness._qr_login(client) == "ok"
+    assert _Dialog.instances[0].resumed == [True]
+
+
+def test_an_ordinary_login_never_enters_verifying(monkeypatch):
+    _script_login(monkeypatch, ["login", "login", "chat"])
+    _stub_chats_view(monkeypatch, "already", [])
+    client = _Client(_Page(), make_settings())
+    assert readiness._qr_login(client) == "ok"
+    assert _Dialog.instances[0].verifying == []
+    assert _Dialog.instances[0].resumed == []
+
+
+def test_a_successful_login_closes_the_dialog_as_done(monkeypatch):
+    _script_login(monkeypatch, ["login", "chat"])
+    _stub_chats_view(monkeypatch, "already", [])
+    client = _Client(_Page(), make_settings())
+    assert readiness._qr_login(client) == "ok"
+    assert _Dialog.instances[0].finished[0] == "done"
+
+
+def test_a_timeout_closes_the_dialog_as_failed_not_cancelled(monkeypatch):
+    """Nobody closed anything, so reporting a cancel blames the user."""
+    _fake_clock(monkeypatch)
+    _script_login(monkeypatch, ["login"])
+    _stub_chats_view(monkeypatch, "already", [])
+    client = _Client(_Page(), make_settings())
+    assert readiness._qr_login(client, 5) == "timeout"
+    assert _Dialog.instances[0].finished[0] == "failed"
+
+
+def test_an_unmatched_page_closes_the_dialog_as_failed(monkeypatch):
+    _script_login(monkeypatch, ["unknown"])
+    _stub_chats_view(monkeypatch, "already", [])
+    client = _Client(_Page(), make_settings())
+    assert readiness._qr_login(client) == "stuck"
+    assert _Dialog.instances[0].finished[0] == "failed"
+
+
+def test_a_closed_dialog_still_reads_as_cancelled(monkeypatch):
+    monkeypatch.setattr(readiness.qr, "QrDialog", _ClosedDialog)
+    _script_login(monkeypatch, ["login"])
+    _stub_chats_view(monkeypatch, "already", [])
+    client = _Client(_Page(), make_settings())
+    assert readiness._qr_login(client) == "cancel"
+    assert _Dialog.instances[0].finished[0] == "cancelled"
+
+
+def test_host_receives_the_verifying_phase(monkeypatch):
+    """The host that renders the QR has the same four dead seconds, so the
+    phase has to reach it too."""
+    seen: list = []
+    _script_login(monkeypatch, ["login", "unknown", "unknown", "chat"])
+    _stub_chats_view(monkeypatch, "already", [])
+    client = _Client(_Page(), make_settings())
+    assert readiness._qr_login(client, on_qr=lambda uri: None,
+                               on_status=seen.append) == "ok"
+    assert seen[0] == "verifying"
+    assert _Dialog.instances == []
+
+
+def test_host_is_told_when_the_login_finishes(monkeypatch):
+    seen: list = []
+    _script_login(monkeypatch, ["login", "chat"])
+    _stub_chats_view(monkeypatch, "already", [])
+    client = _Client(_Page(), make_settings())
+    assert readiness._qr_login(client, on_qr=lambda uri: None,
+                               on_status=seen.append) == "ok"
+    assert seen == ["done"]
+
+
+def test_a_status_only_host_still_suppresses_the_dialog(monkeypatch):
+    _script_login(monkeypatch, ["login", "chat"])
+    _stub_chats_view(monkeypatch, "already", [])
+    client = _Client(_Page(), make_settings())
+    assert readiness._qr_login(client, on_status=lambda state: None) == "ok"
+    assert _Dialog.instances == []
+
+
+def test_the_host_is_not_told_about_its_own_cancellation(monkeypatch):
+    """It pressed the button, so reporting it back would be noise."""
+    seen: list = []
+    _script_login(monkeypatch, ["login"])
+    _stub_chats_view(monkeypatch, "already", [])
+    client = _Client(_Page(), make_settings())
+    assert readiness._qr_login(client, on_qr=lambda uri: False,
+                               on_status=seen.append) == "cancel"
+    assert seen == []
+
+
+def test_the_dialog_walks_the_states_in_order(monkeypatch):
+    """The order is what the dialog looks like to a user: QR, then the code,
+    then a spinner while LINE switches views, then done. The per-payload shape
+    is pinned in tests/service/test_qr.py against a real status file; this
+    pins the sequence the loop drives.
+    """
+    _script_login(monkeypatch, ["login", "unknown", "unknown", "chat"])
+    monkeypatch.setattr(readiness, "_login_pin", lambda page: ("5239", "type it"))
+    _stub_chats_view(monkeypatch, "already", [])
+    client = _Client(_Page(), make_settings())
+    assert readiness._qr_login(client) == "ok"
+
+    dialog = _Dialog.instances[0]
+    # The dedup that keeps this at one entry lives in the real QrDialog, so the
+    # double records every round; the sequence is what matters here.
+    assert dialog.calls[0] == "open"
+    assert dialog.calls[1] == "pin"
+    assert dialog.calls[2] == "verifying"
+    assert dialog.calls[-1] == "finish:done"
+    assert dialog.pins == [("5239", "type it")] * 3
+
+
+def test_the_dialog_restores_the_code_when_the_login_screen_returns(monkeypatch):
+    _script_login(monkeypatch, ["login", "unknown", "login", "chat"])
+    monkeypatch.setattr(readiness, "_login_pin", lambda page: ("5239", "type it"))
+    _stub_chats_view(monkeypatch, "already", [])
+    client = _Client(_Page(), make_settings())
+    assert readiness._qr_login(client) == "ok"
+
+    dialog = _Dialog.instances[0]
+    # Entering and leaving verifying must alternate, not stack.
+    assert dialog.verifying == [True]
+    assert dialog.resumed == [True]

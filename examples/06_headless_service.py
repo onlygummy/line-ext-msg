@@ -2,9 +2,11 @@
 
 Two rules matter here.
 
-quiet=True only silences the startup checklist. It does NOT mean fail fast, so
-an unattended caller has to pass wait_for_login=False itself, otherwise the
-client opens the QR dialog and waits for a human who is not there.
+The wait policy belongs on the constructor. quiet=True only silences the
+startup checklist, and it never meant fail-fast; wait_for_login=False is what
+makes this unattended. Setting it once means no call site can forget it, and a
+method that runs status() on its own cannot quietly start waiting for a human
+who is not there.
 
 Before running this, log in once by hand and leave that Chrome up:
 
@@ -39,10 +41,10 @@ def fetch(room_ref: str, limit: int = 20):
     # stdout is a pipe and only your results should travel through it.
     settings = Settings(quiet=True)
 
-    with LineClient(settings) as line:
-        # wait_for_login=False is the line that makes this unattended. Without
-        # it, a missing session means a QR dialog and an indefinite wait.
-        line.status(wait_for_login=False)
+    with LineClient(settings, wait_for_login=False) as line:
+        # wait_for_login=False is what makes this unattended: the QR path is
+        # skipped entirely and a missing session raises LoginRequired at once.
+        line.status()
         room = line.open_room(room_ref)
         msgs = line.get_messages(room, limit=limit)
 
@@ -66,7 +68,7 @@ def main() -> int:
     try:
         msgs = fetch(args.room, args.limit)
     except LoginRequired:
-        # Nobody scanned a QR. Report it and exit; waiting would hang the job.
+        # No session at all. Report it and exit; waiting would hang the job.
         logger.error("no LINE session available. Log in once by hand with line-ext-msg")
         return 2
     except ChatsViewMissing:

@@ -81,7 +81,9 @@ def get_messages(
             need = 0
             # Same limit scaling the unfiltered path gets, with the search
             # floor on top so a small limit still reaches deep enough.
-            budget = max(settings.search_scroll_ms, min(limit * 1000, 300000) if limit else 0)
+            # scroll_cap_ms is the ceiling on the limit-derived half.
+            budget = max(settings.search_scroll_ms,
+                         min(limit * 1000, settings.scroll_cap_ms) if limit else 0)
         stop = _scroll.scroll_to_fill(page, settings, need,
                                       date_from=date or date_from, on_round=capture,
                                       budget_ms=budget)

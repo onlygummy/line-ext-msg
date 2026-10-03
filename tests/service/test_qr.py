@@ -82,7 +82,7 @@ def test_set_pin_writes_status(tmp_path):
     dialog.set_pin("5239", "enter on phone")
     with open(status, encoding="utf-8") as f:
         data = json.load(f)
-    assert data == {"state": "waiting", "pin": "5239", "desc": "enter on phone"}
+    assert data == {"state": "pin", "pin": "5239", "desc": "enter on phone"}
 
 
 def test_show_qr_writes_png_and_clears_pin(tmp_path):
@@ -102,6 +102,41 @@ def test_clamp_zoom_bounds():
     assert qr.clamp_zoom(0) == qr.MIN_ZOOM
     assert qr.clamp_zoom(9) == qr.MAX_ZOOM
     assert qr.clamp_zoom("bad") == 2
+
+
+# -- the fixed card size ---------------------------------------------------
+
+
+def test_card_size_without_an_image_covers_the_widest_copy():
+    # The box plus its own padding has to cover the copy, or a long
+    # instruction becomes the widest thing in the window again.
+    assert qr.card_size(None, 400, 140) == (400 - 2 * qr.CARD_PAD, 140)
+
+
+def test_card_size_never_goes_below_the_floor():
+    assert qr.card_size(None, 10, 5) == qr.MIN_CARD
+
+
+def test_card_size_grows_for_a_bigger_image():
+    """The QR is the one size the user picks, through zoom."""
+    assert qr.card_size((600, 600), 200, 140) == (600, 600)
+
+
+def test_card_size_keeps_the_floor_for_a_smaller_image():
+    """A small QR must not shrink the box below what the copy needs."""
+    assert qr.card_size((120, 120), 400, 140) == (400 - 2 * qr.CARD_PAD, 140)
+
+
+def test_card_size_takes_the_wider_of_image_and_copy():
+    assert qr.card_size((900, 300), 200, 140) == (900, 300)
+    assert qr.card_size((100, 100), 900, 140) == (900 - 2 * qr.CARD_PAD, 140)
+
+
+def test_card_size_stays_monotonic_in_the_image():
+    """Growing the image must never shrink the box, or the window would jump
+    when a second QR of a different size arrives."""
+    sizes = [qr.card_size((n, n), 200, 140) for n in (100, 300, 300, 500)]
+    assert sizes == sorted(sizes)
 
 
 def test_format_pin_spaces_digits():
@@ -181,3 +216,116 @@ def test_write_status_is_the_shared_payload_shape(tmp_path):
             "desc": "Enter this code",
         }
     assert not os.path.exists(f"{status}.tmp"), "the temp file must be replaced away"
+
+
+def _payload(tmp_path) -> dict:
+    status = tmp_path / "status.json"
+    return json.loads(status.read_text(encoding="utf-8"))
+
+
+def _dialog(tmp_path) -> qr.QrDialog:
+    return qr.QrDialog(png=str(tmp_path / "qr.png"), status=str(tmp_path / "status.json"))
+
+
+def test_state_copy_covers_every_terminal_state():
+    assert qr.TERMINAL_STATES <= set(qr.STATE_COPY)
+
+
+def test_state_copy_entries_are_well_formed():
+    for state, entry in qr.STATE_COPY.items():
+        pill, instruction, tone = entry
+        assert pill, state
+        assert isinstance(instruction, str), state
+        assert tone in {"green", "amber", "red", "gray"}, state
+
+
+def test_the_viewer_has_a_colour_for_every_tone():
+    """The viewer picks colours by tone name, and a missing one would raise a
+    KeyError inside the dialog process, whose output is discarded. That makes
+    it invisible, so it is checked from here instead: qr_view only imports
+    Tkinter at module level, so this needs no display."""
+    from line_ext_msg.service import qr_view
+
+    tones = {entry[2] for entry in qr.STATE_COPY.values()}
+    assert tones <= set(qr_view.TONE_COLOR)
+
+
+def test_verifying_carries_no_payload(tmp_path):
+    """The point of the state is that the user has nothing left to do, so a
+    stale PIN must not stay in the file for the viewer to render."""
+    dialog = _dialog(tmp_path)
+    dialog.set_pin("5239")
+    dialog.set_verifying()
+    assert _payload(tmp_path) == {"state": "verifying"}
+
+
+def test_resume_restores_the_pin_step(tmp_path):
+    dialog = _dialog(tmp_path)
+    dialog.set_pin("5239", "type it on the phone")
+    dialog.set_verifying()
+    dialog.resume()
+    assert _payload(tmp_path) == {
+        "state": "pin", "pin": "5239", "desc": "type it on the phone",
+    }
+
+
+def test_resume_without_a_pin_returns_to_the_qr_step(tmp_path):
+    dialog = _dialog(tmp_path)
+    dialog.show_qr(_png_uri(b"qr"))
+    dialog.set_verifying()
+    dialog.resume()
+    assert _payload(tmp_path) == {"state": "waiting", "pin": "", "desc": ""}
+
+
+def test_resume_is_a_no_op_outside_the_verifying_state(tmp_path):
+    """Otherwise every ordinary login round would rewrite the status file."""
+    dialog = _dialog(tmp_path)
+    dialog.set_pin("5239")
+    before = (tmp_path / "status.json").stat().st_mtime_ns
+    dialog.resume()
+    assert _payload(tmp_path)["state"] == "pin"
+    assert (tmp_path / "status.json").stat().st_mtime_ns == before
+
+
+def test_a_repeated_pin_rerenders_after_verifying(tmp_path):
+    """The dedup trap: the same code coming back means the previous
+    verification was rejected, and swallowing it strands the user on a spinner
+    with nothing to type."""
+    dialog = _dialog(tmp_path)
+    dialog.set_pin("5239")
+    dialog.set_verifying()
+    dialog.set_pin("5239")
+    assert _payload(tmp_path) == {"state": "pin", "pin": "5239", "desc": ""}
+
+
+def test_an_unchanged_pin_is_still_deduped_outside_verifying(tmp_path):
+    dialog = _dialog(tmp_path)
+    dialog.set_pin("5239")
+    dialog.set_pin("5239")
+    assert _payload(tmp_path)["state"] == "pin"
+
+
+def test_a_new_qr_leaves_the_verifying_state(tmp_path):
+    dialog = _dialog(tmp_path)
+    dialog.set_pin("5239")
+    dialog.set_verifying()
+    dialog.show_qr(_png_uri(b"qr"))
+    assert _payload(tmp_path) == {"state": "waiting", "pin": "", "desc": ""}
+
+
+def test_finish_writes_the_state_it_was_given(tmp_path, monkeypatch):
+    """A timeout or an unmatched page must read as failed, not cancelled:
+    the user did not close anything."""
+    written: list = []
+    monkeypatch.setattr(qr, "write_status",
+                        lambda path, state, **extra: written.append((state, extra)))
+    _dialog(tmp_path).finish("failed")
+    assert written == [("failed", {})]
+
+
+def test_finish_defaults_to_cancelled(tmp_path, monkeypatch):
+    written: list = []
+    monkeypatch.setattr(qr, "write_status",
+                        lambda path, state, **extra: written.append((state, extra)))
+    _dialog(tmp_path).finish()
+    assert written == [("cancelled", {})]
