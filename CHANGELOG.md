@@ -1,18 +1,27 @@
 # Changelog
 
-## Unreleased
+## 3.0.0
 
 ### Breaking changes
 
 - `status()` waits for a login in every mode. `wait_for_login=None` now resolves to `True` instead of `not settings.quiet`, so `LineClient(quiet=True)` no longer fails fast with `LoginRequired`: it shows the QR dialog and waits. Pass `wait_for_login=False` to get the old behaviour back, and note that a machine with no interactive desktop raises `QrDialogFailed` instead of `LoginRequired`. Both are `LineError` subclasses. `settings.quiet` still only silences the checklist, and `line-ext-msg --wait-login` is now the default for every invocation (`--no-wait-login` is the opt-out)
 - `clear_session()` is renamed to `logout()` and the `--clear-session` flag is replaced by a `logout` subcommand (`line-ext-msg logout`). The old names are gone, so an embedding app has to rename the call and a script has to move `--yes` after the subcommand: `line-ext-msg logout --yes`. The probe written before a wipe moves from `session/session_probe_before_clear.json` to `session/session_probe_before_logout.json`. The internal `maintenance.clear_live` and `maintenance.clear_on_disk` keep their names because they describe the storage they clear, not the operation
-- Fix: rooms are read from the chats view only. LINE lands on its own view after the QR login and nothing navigated back, so the chat list never rendered and the room selectors, which matched the friends list as well, silently returned friend and group names as rooms. `status()` now checks the view after login: it navigates to the chats URL when the route is wrong and clicks the nav button when the route is right but no chat list rendered, then logs which one worked and the URL it saw (`LINE_EXT_MSG_CHATS_ENSURE_MS`, default 10s)
 - The friends list is out of the `room_*` selectors, so a wrong view can no longer be read as rooms. `list_rooms()` raises the new `ChatsViewMissing` instead of returning an empty list, because an empty list reads as "this account has no rooms"
+- `search_all()` and `unread_full()` entries now carry `truncated`, and a truncated room is listed even when it matched nothing. An entry with empty `messages` and `truncated: true` means "not reached", not "not there", so code that iterates the report has to read the flag
+- `open_room()` locates a room row by `data-mid` only. A row with no `data-mid` still falls back to its list position, because that is the only key left for it. Two consequences: a room whose `data-mid` is not among the rendered rows makes the library scroll the chat list once and look again, and raises `RoomNotFound` when the room is genuinely not there; and a row with no Go-chatroom button reports `RoomNotFound` instead of a click timeout. A caller that previously received another room's messages in either situation now gets an error, which is the intended outcome
+
+### Fixes
+
+- Rooms are read from the chats view only. LINE lands on its own view after the QR login and nothing navigated back, so the chat list never rendered and the room selectors, which also matched the friends list, silently returned friend and group names as rooms. `status()` now checks the view after login: it navigates to the chats URL when the route is wrong and clicks the nav button when the route is right but no chat list rendered, then logs which one worked and the URL it saw
 - The headless QR login no longer hangs when LINE lands on a view the library does not read. After the PIN step such a page matches neither the login screen nor the chat list, which `auth.check_login` reports as `unknown`; the old loop ignored that reason and polled until the dialog was closed. It now treats a sustained `unknown` as "logged in on another view", retries the chats route twice, and raises `AppNotReady` pointing at `--dump` if that does not work. The reload is gated on `unknown` on purpose, because the login screen does not match it and a reload there would discard a half-entered PIN
-- `open_room()` matches a row by `data-mid` before falling back to the list position, so a re-rendered virtualized list cannot make it click the wrong room, and a row with no Go-chatroom button reports `RoomNotFound` instead of a click timeout
+- Adding a filter made a search shallower than the same call without one. A filtered query passed `need=0` to the scroll loop, which is the sentinel for "no target" and fell back to the 8s base budget instead of the limit-scaled one, so `--search` stopped mid-history in long rooms. Filtered queries now pass an explicit budget, still scaled up by `limit` and capped at 300s
+
+### Changes
+
+- A partial scan is now visible instead of looking like a clean miss: `Messages.scroll_stop` carries the scroll stop reason, `--search` prints which rooms were partial and how to dig deeper, and the new `--search-scroll-budget-s` sets the per-room budget from the command line
 - `search_all()` and `unread_full()` read the room list once instead of once per room, which with the 8s scroll budget was the dominant cost of both
-- Fix: adding a filter made a search shallower than the same call without one. A filtered query passed `need=0` to the scroll loop, which is the sentinel for "no target" and fell back to the 8s base budget instead of the limit-scaled one, so `--search` stopped mid-history in long rooms. Filtered queries now pass an explicit budget (`search_scroll_ms`, default 60s, still scaled up by `limit` and capped at 300s) and are flagged when that budget runs out
-- A partial scan can no longer pass for a clean miss. `Messages.scroll_stop` carries the scroll stop reason, `search_all()` and `unread_full()` entries carry `truncated`, a truncated room is listed even when it matched nothing (an empty result with `truncated: true` means "not reached", not "not there"), `--search` prints which rooms were partial, and the CLI adds `--search-scroll-budget-s`. This widens the `Report` entry shape for those two methods
+- New settings: `LINE_EXT_MSG_CHATS_ENSURE_MS` (default 10s) bounds the wait for the chat list after switching to the chats view, and `LINE_EXT_MSG_SEARCH_SCROLL_MS` (default 60s) is the lower bound for the per-room budget of a filtered query. Neither is an off switch: use `scroll=False` or `LINE_EXT_MSG_MSGS_SCROLL_MS=0` for that
+- The QR dialog card no longer shows the app name: the header row holds only the status pill on the right. `LINE_EXT_MSG_DIALOG_TITLE` and `--dialog-title` still set the window title bar, which is where the name now lives. The dialog layout, colours and PIN step are unchanged
 
 ## 2.0.0
 

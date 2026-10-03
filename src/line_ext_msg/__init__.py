@@ -38,7 +38,7 @@ from .domain.models import Message, Room, StepResult
 from .results import Dom, Messages, Probe, Report, Rooms
 from .service.client import LineClient
 
-__version__ = "2.0.0"
+__version__ = "3.0.0"
 
 # Library best practice: never emit or configure logging on import. Callers
 # (the CLI, or an embedding app) attach handlers via output.logging.configure.

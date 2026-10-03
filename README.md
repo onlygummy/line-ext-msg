@@ -190,7 +190,7 @@ with LineClient(settings) as line:
 | `LINE_EXT_MSG_HEADLESS` | `1` | run Chrome without a window |
 | `LINE_EXT_MSG_QUIET` | off | keep the checklist silent |
 | `LINE_EXT_MSG_QR_ZOOM` | `2` | QR dialog zoom (1-4) |
-| `LINE_EXT_MSG_DIALOG_TITLE` | `LINE` | window title and header text of the QR dialog |
+| `LINE_EXT_MSG_DIALOG_TITLE` | `LINE` | window title of the QR dialog |
 | `LINE_EXT_MSG_QR_READY_MS` | `20000` | how long to wait for the QR canvas |
 | `LINE_EXT_MSG_ROOMS_SCROLL_MS` | `8000` | room list scroll budget |
 | `LINE_EXT_MSG_CHATS_ENSURE_MS` | `10000` | how long to wait for the chat list after switching to the chats view |
