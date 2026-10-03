@@ -344,6 +344,76 @@ def test_sliding_window_keeps_unloaded_newest():
     assert [m.id for m in out] == ["n0", "n1", "n2", "n3", "n4"]
 
 
+def _record_budget(monkeypatch):
+    """Capture what get_messages asks the scroll loop for."""
+    seen: list[tuple[int, int | None]] = []
+
+    def fake_scroll_to_fill(_page, _settings, need, date_from=None, on_round=None,
+                            budget_ms=None):
+        seen.append((need, budget_ms))
+        return "top"
+
+    monkeypatch.setattr(messages._scroll, "scroll_to_fill", fake_scroll_to_fill)
+    return seen
+
+
+def test_unfiltered_query_keeps_the_limit_as_the_scroll_target(monkeypatch):
+    seen = _record_budget(monkeypatch)
+    page = _SlidingPage([_win(1789175000000, [0, 1])])
+    messages.get_messages(cast(Page, page), _settings(), limit=5, scroll=True)
+    assert seen == [(5, None)]
+
+
+def test_filtered_query_gets_the_search_budget_instead_of_no_target(monkeypatch):
+    """A keyword used to pass need=0, which fell back to the 8s base budget and
+    made the scan shallower than the same call without a filter."""
+    seen = _record_budget(monkeypatch)
+    page = _SlidingPage([_win(1789175000000, [0, 1])])
+    messages.get_messages(cast(Page, page), _settings(search_scroll_ms=60000),
+                          limit=5, keyword="x", scroll=True)
+    need, budget = seen[0]
+    assert need == 0
+    # max(60000, min(5 * 1000, 300000)) = 60000
+    assert budget == 60000
+
+
+def test_filtered_budget_still_scales_with_a_large_limit(monkeypatch):
+    seen = _record_budget(monkeypatch)
+    page = _SlidingPage([_win(1789175000000, [0, 1])])
+    messages.get_messages(cast(Page, page), _settings(search_scroll_ms=60000),
+                          limit=100, keyword="x", scroll=True)
+    # max(60000, min(100 * 1000, 300000)) = 100000, same as the unfiltered path
+    assert seen[0][1] == 100000
+
+
+def test_scroll_stop_is_carried_on_the_result(monkeypatch):
+    monkeypatch.setattr(messages._scroll, "scroll_to_fill",
+                        lambda *_a, **_k: "budget")
+    page = _SlidingPage([_win(1789175000000, [0, 1])])
+    out = messages.get_messages(cast(Page, page), _settings(), limit=5, scroll=True)
+    assert out.scroll_stop == "budget"
+
+
+def test_scroll_stop_is_empty_when_scrolling_is_off():
+    page = _SlidingPage([_win(1789175000000, [0, 1])])
+    out = messages.get_messages(cast(Page, page), _settings(), limit=5, scroll=False)
+    assert out.scroll_stop == ""
+
+
+def test_explicit_budget_overrides_the_need_derived_one():
+    page = _FakePage(start=5, total=50, slow_rounds=999, date_shifts=9999)
+    old = _patch_selectors(scroll, message_item="msg")
+    try:
+        reason = scroll.scroll_to_fill(
+            cast(Page, page), _settings(messages_scroll_ms=500), need=100,
+            budget_ms=2000)
+    finally:
+        scroll.SELECTORS = old
+    # need=100 alone would allow 100 rounds; the explicit budget caps it at 2.
+    assert reason == "budget"
+    assert page.sleeps == 2
+
+
 class _ImgNode(_Node):
     def locator(self, sel):
         if "imageMessageContent" in sel or sel == "img":

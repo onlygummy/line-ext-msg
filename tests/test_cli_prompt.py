@@ -2,7 +2,9 @@
 
 from unittest.mock import patch
 
-from line_ext_msg.cli import _display, _oneline, ask_limit
+import pytest
+
+from line_ext_msg.cli import _build_parser, _display, _oneline, ask_limit
 from line_ext_msg.domain.models import Message
 
 
@@ -45,3 +47,31 @@ def test_display_returns_full_text():
 
 def test_display_joins_multiline():
     assert _display(_msg("@All\n\nhello")) == "@All  hello"
+
+
+def test_subcommand_is_optional():
+    """Every query flag must keep working without naming a subcommand."""
+    assert _build_parser().parse_args([]).command is None
+
+
+def test_query_flags_still_parse_without_a_subcommand():
+    args = _build_parser().parse_args(["--unread", "--limit", "3"])
+    assert args.command is None
+    assert args.unread is True
+    assert args.limit == 3
+
+
+def test_logout_subcommand_with_yes():
+    args = _build_parser().parse_args(["logout", "--yes"])
+    assert args.command == "logout"
+    assert args.yes is True
+
+
+def test_logout_subcommand_asks_by_default():
+    assert _build_parser().parse_args(["logout"]).yes is False
+
+
+def test_clear_session_flag_is_gone():
+    """The old flag was replaced by the subcommand and must not come back."""
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(["--clear-session"])

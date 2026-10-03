@@ -32,10 +32,12 @@ def get_messages(
     Tracks day separators while walking the DOM so each message gets a
     real date. The chat list is virtualized in both directions, so rows
     are accumulated into a SeenMap every scroll round (bounded by
-    settings.messages_scroll_ms); rows unloaded mid-scroll stay in the
-    result. with_media fetches image bubbles in memory (data URI); call
-    Messages.download_media to write files. Never raises on missing
-    selectors: returns an empty Messages instead.
+    settings.messages_scroll_ms, or settings.search_scroll_ms when a filter is
+    set); rows unloaded mid-scroll stay in the result. with_media fetches
+    image bubbles in memory (data URI); call Messages.download_media to write
+    files. Never raises on missing selectors: returns an empty Messages
+    instead. Messages.scroll_stop says why the backfill stopped, and
+    'budget' means the messages are a partial scan.
     """
     try:
         page.wait_for_selector(SELECTORS["message_list"], timeout=settings.selector_ms)
@@ -63,21 +65,36 @@ def get_messages(
         return len(seen)
 
     capture()
+    stop = ""
     if scroll:
-        # Without filters any `limit` rows are enough; with filters the
-        # surviving count is unknown, so fill the whole scroll budget (0).
+        # Without a filter any `limit` rows are enough, so `need` can end the
+        # scan early. With a filter the surviving count is unknown, so there is
+        # no `need` at all and the budget is what bounds the run: without a
+        # dedicated one, passing need=0 silently fell back to the base budget
+        # and made a filtered search shallower than the same call unfiltered.
         filtered = any(v is not None for v in (
             date, date_from, date_to, time_from, time_to, sender, keyword,
         ))
-        _scroll.scroll_to_fill(page, settings, 0 if filtered else (limit or 0),
-                               date_from=date or date_from, on_round=capture)
+        budget = None
+        need = limit or 0
+        if filtered:
+            need = 0
+            # Same limit scaling the unfiltered path gets, with the search
+            # floor on top so a small limit still reaches deep enough.
+            budget = max(settings.search_scroll_ms, min(limit * 1000, 300000) if limit else 0)
+        stop = _scroll.scroll_to_fill(page, settings, need,
+                                      date_from=date or date_from, on_round=capture,
+                                      budget_ms=budget)
 
     out = apply_filters(list(seen.values()), date=date, date_from=date_from,
                         date_to=date_to, time_from=time_from, time_to=time_to,
                         sender=sender, keyword=keyword)
     # DOM order is newest-first (verified in room dumps), so the latest
     # messages are at the head, not the tail.
-    return Messages(out[:limit] if limit else out)
+    result = Messages(out[:limit] if limit else out)
+    # The caller needs this to tell a complete scan from a partial one.
+    result.scroll_stop = stop
+    return result
 
 
 __all__ = ["get_messages"]

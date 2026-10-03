@@ -169,6 +169,7 @@ def scroll_to_fill(
     need: int,
     date_from: str | None = None,
     on_round=None,
+    budget_ms: int | None = None,
 ) -> str:
     """Scroll the chat up so older rows render before the read pass.
 
@@ -177,13 +178,19 @@ def scroll_to_fill(
     'top' means parked at the older edge (top 0, or the negative edge
     in column-reverse boxes) with a stable count, height, and
     scroll-date anchor five rounds in a row (the first rounds act as
-    grace for slow image-heavy history). The scroll direction is probed
-    once per run. on_round() runs after each settle and its return value
-    (accumulated unique count) drives the need check; without it the
-    rendered count is used. Each round strides toward the older edge
-    (half the remaining distance, 1-4 viewports), so the loop ends via
-    need/top/date; the time budget (need * 1000ms, capped at 300s, never
-    below settings.messages_scroll_ms) is only a last-resort guard.
+    grace for slow image-heavy history). 'budget' means the scan ran out
+    of time before the older edge, so whatever it collected is partial.
+    The scroll direction is probed once per run. on_round() runs after
+    each settle and its return value (accumulated unique count) drives
+    the need check; without it the rendered count is used. Each round
+    strides toward the older edge (half the remaining distance, 1-4
+    viewports), so the loop normally ends via need/top/date.
+
+    budget_ms overrides the time budget, which otherwise scales with
+    need (need * 1000ms, capped at 300s, never below
+    settings.messages_scroll_ms) and acts only as a last-resort guard.
+    A caller searching with a filter passes it explicitly because `need`
+    cannot express "keep going until the history runs out".
     Skipped entirely when disabled (0).
     """
     def have() -> int:
@@ -207,6 +214,10 @@ def scroll_to_fill(
     budget = settings.messages_scroll_ms
     if need:
         budget = max(budget, min(need * 1000, 300000))
+    if budget_ms is not None:
+        # An explicit budget replaces the need-derived one: it is the caller's
+        # search-depth policy, and `need` cannot express "no target".
+        budget = budget_ms
     stable_top = 0
     waited = 0
     rounds = 0

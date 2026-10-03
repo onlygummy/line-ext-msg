@@ -4,7 +4,7 @@ import logging
 
 import pytest
 
-from line_ext_msg.domain.errors import LoginRequired, QrDialogFailed
+from line_ext_msg.domain.errors import AppNotReady, LoginRequired, QrDialogFailed
 from line_ext_msg.output.progress import Steps
 from line_ext_msg.service import readiness
 from tests.helpers import make_settings
@@ -88,6 +88,14 @@ class _Dialog:
 
     def finish(self, state="cancel", keep_png=False):
         self.finished = (state, keep_png)
+
+
+class _ClosedDialog(_Dialog):
+    """A dialog the user already closed, so the wait ends on the next round."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._alive = False
 
 
 class _Client:
@@ -366,6 +374,11 @@ def _stub_qr_login(monkeypatch, outcome: str, calls: list) -> None:
     monkeypatch.setattr(readiness, "_qr_login", lambda client: calls.append("qr") or outcome)
 
 
+def _stub_chats_view(monkeypatch, result: str, calls: list) -> None:
+    monkeypatch.setattr(readiness.session, "ensure_chats_view",
+                        lambda page, settings: calls.append(result) or result)
+
+
 def test_should_wait_defaults_to_true():
     assert readiness._should_wait(None) is True
     assert readiness._should_wait(True) is True
@@ -426,3 +439,131 @@ def test_run_returns_after_a_successful_wait(monkeypatch):
     assert calls == ["qr"]
     assert steps[-1].name == "Logged in"
     assert steps[-1].passed is True
+
+
+def test_run_checks_the_chats_view_after_a_login_wait(monkeypatch):
+    """LINE lands on its own view after auth, so the route has to be
+    re-checked once logged in, not only before the login screen."""
+    _patch_startup(monkeypatch, logged_in=False, reason="login")
+    _stub_qr_login(monkeypatch, "ok", [])
+    chats: list = []
+    _stub_chats_view(monkeypatch, "navigated", chats)
+    client = _Client(_Page(), make_settings(quiet=True))
+    readiness.run(client)
+    assert chats == ["navigated"]
+
+
+def test_run_checks_the_chats_view_when_already_logged_in(monkeypatch):
+    _patch_startup(monkeypatch, logged_in=True, reason="chat")
+    chats: list = []
+    _stub_chats_view(monkeypatch, "already", chats)
+    client = _Client(_Page(), make_settings(quiet=True))
+    readiness.run(client)
+    assert chats == ["already"]
+
+
+def test_run_does_not_raise_when_the_chats_view_cannot_be_reached(monkeypatch, caplog):
+    """status() still passes so an embedding app can poll it; list_rooms is
+    the call that refuses to read a page that is not the chats view."""
+    _patch_startup(monkeypatch, logged_in=True, reason="chat")
+    _stub_chats_view(monkeypatch, "failed", [])
+    client = _Client(_Page(), make_settings(quiet=True))
+    with caplog.at_level(logging.WARNING):
+        steps = readiness.run(client)
+    assert steps[-1].passed is True
+    assert "could not reach the chats view" in caplog.text
+
+
+def _script_login(monkeypatch, reasons, cap=200):
+    """check_login replays a reason sequence, repeating the last one.
+
+    The cap turns a wait loop that never reaches its exit condition into a
+    failure instead of a hung test run.
+    """
+    script = list(reasons)
+    calls = {"n": 0}
+
+    def fake_check_login(page, timeout_ms=0):
+        calls["n"] += 1
+        if calls["n"] > cap:
+            raise AssertionError("check_login polled too often: the loop never ended")
+        reason = script.pop(0) if len(script) > 1 else script[0]
+        return reason == "chat", reason
+
+    monkeypatch.setattr(readiness.auth, "check_login", fake_check_login)
+
+
+def test_qr_login_recovers_when_line_lands_on_another_view(monkeypatch):
+    """The reported bug: after the PIN step the page matched neither the login
+    screen nor the chats list, and the loop spun until the dialog was closed."""
+    _script_login(monkeypatch, ["login", "login", "unknown", "unknown",
+                                "unknown", "unknown", "chat"])
+    chats: list = []
+    _stub_chats_view(monkeypatch, "navigated", chats)
+    client = _Client(_Page(), make_settings())
+    assert readiness._qr_login(client) == "ok"
+    assert chats == ["navigated"]
+
+
+def test_qr_login_gives_up_instead_of_spinning(monkeypatch):
+    _script_login(monkeypatch, ["unknown"])
+    _stub_chats_view(monkeypatch, "already", [])
+    client = _Client(_Page(), make_settings())
+    # The dialog is still open (alive), so only the give-up path can end this.
+    assert readiness._qr_login(client) == "stuck"
+
+
+def test_qr_login_bounds_the_number_of_reloads(monkeypatch):
+    """A page that never recovers must not reload the SPA forever."""
+    _script_login(monkeypatch, ["unknown"])
+    chats: list = []
+    _stub_chats_view(monkeypatch, "already", chats)
+    client = _Client(_Page(), make_settings())
+    assert readiness._qr_login(client) == "stuck"
+    assert len(chats) == readiness._UNKNOWN_RECOVERIES
+
+
+def test_qr_login_stops_when_the_reload_reports_failure(monkeypatch):
+    _script_login(monkeypatch, ["unknown"])
+    chats: list = []
+    _stub_chats_view(monkeypatch, "failed", chats)
+    client = _Client(_Page(), make_settings())
+    assert readiness._qr_login(client) == "stuck"
+    assert chats == ["failed"]
+
+
+def test_qr_login_does_not_reload_while_the_login_screen_is_up(monkeypatch):
+    """A reload here would throw away a half-entered PIN."""
+    monkeypatch.setattr(readiness.qr, "QrDialog", _ClosedDialog)
+    _script_login(monkeypatch, ["login", "login", "login", "login", "login",
+                                "login", "login", "login", "login", "login"])
+    chats: list = []
+    _stub_chats_view(monkeypatch, "already", chats)
+    client = _Client(_Page(), make_settings())
+    assert readiness._qr_login(client) == "cancel"
+    assert chats == []
+
+
+def test_qr_login_grace_resets_when_the_login_screen_returns(monkeypatch):
+    """Rounds on the login screen must not add up towards the give-up.
+
+    Eighteen unclassified rounds are spread across login rounds, so without a
+    reset the loop would have given up long before reaching the final 'chat'.
+    One recovery is expected: the four trailing unknowns are consecutive.
+    """
+    reasons = ["unknown", "unknown", "login"] * 6 + ["unknown"] * 4 + ["chat"]
+    _script_login(monkeypatch, reasons)
+    chats: list = []
+    _stub_chats_view(monkeypatch, "already", chats)
+    client = _Client(_Page(), make_settings())
+    assert readiness._qr_login(client) == "ok"
+    assert len(chats) == 1
+
+
+def test_run_reports_an_unmatched_page_as_app_not_ready(monkeypatch):
+    _patch_startup(monkeypatch, logged_in=False, reason="login")
+    _stub_qr_login(monkeypatch, "stuck", [])
+    client = _Client(_Page(), make_settings(quiet=True))
+    with pytest.raises(AppNotReady) as err:
+        readiness.run(client)
+    assert "--dump" in str(err.value)

@@ -29,7 +29,7 @@ with LineClient(quiet=True) as line:
 
 | Method | Returns | Notes |
 |---|---|---|
-| `status(wait_for_login=None, login_timeout_ms=None)` | `list[StepResult]` | runs the 5 readiness checks and waits for the QR by default; raises a typed `LineError` on the first failure |
+| `status(wait_for_login=None, login_timeout_ms=None)` | `list[StepResult]` | runs the 5 readiness checks, waits for the QR by default, then makes sure the chats view is the one rendered; raises a typed `LineError` on the first failure |
 | `list_rooms(unread_only=False, query=None)` | `Rooms` | `list[Room]`; `query` matches the room name substring |
 | `open_room(ref)` | `Room` | `ref` is an index, a `data-mid`, a name substring, or a `Room` |
 | `get_messages(room=None, limit=5, ...)` | `Messages` | `list[Message]`; date/time, sender, and keyword filters |
@@ -39,7 +39,7 @@ with LineClient(quiet=True) as line:
 | `dump_page()` | `Dom` | raw chats DOM for selector tuning |
 | `dump_room(ref)` | `Dom` | opens the room and returns its DOM |
 | `probe_session()` | `Probe` | redacted storage probe (key names and lengths only) |
-| `clear_session(backup=True)` | `dict` | wipes the LINE session, keeps the extension |
+| `logout(backup=True)` | `dict` | logs out of LINE, wipes the session, keeps the extension |
 | `close()` | `None` | detaches CDP; Chrome keeps running |
 
 `get_messages` also accepts `date`, `date_from`, `date_to`, `time_from`, `time_to`, `sender`, `keyword`, `with_media`, and `scroll`.
@@ -121,7 +121,7 @@ with LineClient(quiet=True) as line:
 
 The dialog is currently the only login UI: there is no callback yet for an embedding app to fetch the QR image or the PIN and render it itself. A headless service should pass `wait_for_login=False`, so a missing login surfaces as `LoginRequired` instead of a wait, or keep a logged-in Chrome running.
 
-The LINE session is tied to the running Chrome process, not to disk. The token stays in Local Storage (`lcs_secure_<mid>`, about 3.2 KB), but the key that decrypts it lives in the extension's sandboxed `ltsmSandbox.html`, which has no persistent storage, so a fresh Chrome asks for the QR again. The library therefore never restarts a running Chrome just to match a preferred mode: a live instance is reused and stays logged in, so you scan the QR once per Chrome lifetime. Closing Chrome or rebooting requires a new scan. `clear_session()` wipes the session on purpose.
+The LINE session is tied to the running Chrome process, not to disk. The token stays in Local Storage (`lcs_secure_<mid>`, about 3.2 KB), but the key that decrypts it lives in the extension's sandboxed `ltsmSandbox.html`, which has no persistent storage, so a fresh Chrome asks for the QR again. The library therefore never restarts a running Chrome just to match a preferred mode: a live instance is reused and stays logged in, so you scan the QR once per Chrome lifetime. Closing Chrome or rebooting requires a new scan. `logout()` wipes the session on purpose.
 
 ## Logging
 
@@ -159,7 +159,17 @@ Or attach your own handlers to the `line_ext_msg` logger. The CLI configures it 
 }
 ```
 
-`unread_digest`, `unread_full`, and `search_all` return a `Report` (a list of dicts: room dicts, and `{"room": ..., "messages": [...]}` for the latter two), not models.
+`unread_digest`, `unread_full`, and `search_all` return a `Report` (a list of dicts: room dicts, and `{"room": ..., "messages": [...], "truncated": ...}` for the latter two), not models.
+
+### Partial scans
+
+A filtered query has no target row count, so the backfill scroll runs until the oldest message, a date boundary, or the time budget. When the budget runs out first the result is partial, and the library says so instead of letting an empty list read as "no match":
+
+- `search_all` and `unread_full` entries carry `truncated: true` for those rooms, and a truncated room is listed even when it matched nothing
+- `line-ext-msg --search` prints which rooms were partial and how to dig deeper
+- `Messages.scroll_stop` carries the raw reason: `need`, `top`, `date`, `budget`, `disabled`, or `detached`
+
+Raise `search_scroll_ms` (or pass `--search-scroll-budget-s`) when a room keeps coming back truncated. It is a lower bound, so raising it past `limit * 1000ms` (capped at 300s) has no effect; raise `limit_per_room` for a bigger scan.
 
 ## Settings
 
@@ -183,7 +193,9 @@ with LineClient(settings) as line:
 | `LINE_EXT_MSG_DIALOG_TITLE` | `LINE` | window title and header text of the QR dialog |
 | `LINE_EXT_MSG_QR_READY_MS` | `20000` | how long to wait for the QR canvas |
 | `LINE_EXT_MSG_ROOMS_SCROLL_MS` | `8000` | room list scroll budget |
+| `LINE_EXT_MSG_CHATS_ENSURE_MS` | `10000` | how long to wait for the chat list after switching to the chats view |
 | `LINE_EXT_MSG_MSGS_SCROLL_MS` | `8000` | message backfill scroll budget |
+| `LINE_EXT_MSG_SEARCH_SCROLL_MS` | `60000` | lower bound for the per-room scroll budget when a filter is set (keyword, sender, date); the `limit` raises it further, so 0 does not disable scrolling |
 | `LINE_EXT_MSG_LOGIN_WAIT_MS` | `300000` | login wait for the headed fallback |
 | `LINE_EXT_MSG_READY_MS` | `30000` | app render timeout |
 | `LINE_EXT_MSG_SELECTOR_MS` | `15000` | selector wait timeout |
@@ -201,16 +213,20 @@ line-ext-msg                        # pick a room in the terminal, print to scre
 line-ext-msg --save                 # also write session/rooms.json and session/messages_<index>.json
 line-ext-msg --unread               # only rooms with unread messages
 line-ext-msg --search "invoice"     # search every room and summarise the hits
+line-ext-msg --search "invoice" --search-scroll-budget-s 180   # dig deeper per room
 line-ext-msg --status               # check Chrome and login, then stop (keepalive)
 line-ext-msg --verbose              # DEBUG logs
+line-ext-msg logout                 # log out of LINE and wipe the session
 line-ext-msg --help                 # full flag list
 ```
 
-On first run the CLI starts Chrome on the isolated profile. If the LINE extension is missing it opens a headed window at the Web Store, waits until the extension is installed, then returns to headless by itself. When a QR scan is needed it captures the QR and shows it in a centered `LINE` dialog (zoom via `LINE_EXT_MSG_QR_ZOOM`), waits until you scan or close it, and shows the PIN code when LINE asks for one. `--clear-session` wipes the session (asks for confirmation).
+On first run the CLI starts Chrome on the isolated profile. If the LINE extension is missing it opens a headed window at the Web Store, waits until the extension is installed, then returns to headless by itself. When a QR scan is needed it captures the QR and shows it in a centered `LINE` dialog (zoom via `LINE_EXT_MSG_QR_ZOOM`), waits until you scan or close it, and shows the PIN code when LINE asks for one. The `logout` subcommand wipes the session and asks for confirmation; `logout --yes` skips the prompt.
 
 ## Limitations
 
-- Room and message lists are virtualized; the library scrolls to load more within a time budget. Disable with `scroll=False` or set the scroll budget to 0.
+- Room and message lists are virtualized; the library scrolls to load more within a time budget. Disable with `scroll=False` or `LINE_EXT_MSG_MSGS_SCROLL_MS=0`; those are the only off switches, since a filtered query raises its own budget from `search_scroll_ms` and the `limit`.
+- A filtered query stops at the oldest message, a date, or its budget, whichever comes first. Its budget is `max(search_scroll_ms, min(limit * 1000s, 300s))`, so it is never shorter than the unfiltered one. A search over a long history can report `truncated` rather than pretending it reached the beginning.
+- Only the chats view is read. The friends and groups view is never used as a room list, so a LINE build that only offers that view raises `ChatsViewMissing` instead of returning names that are not conversations.
 - Only what the UI renders is readable; there is no per-message read API.
 - `unread_digest`, `unread_full`, and `search_all` return a `Report` (list of dicts), not models.
 - `download_media` only writes what `with_media=True` already fetched; it does not re-open the room.
@@ -266,6 +282,10 @@ uv build
 ```
 
 ## Troubleshooting
+
+If the room list shows names that are people or groups rather than conversations, or comes back empty, the LINE tab is not on the chats view. `status()` logs which view it reached and the URL it saw (`chats view: navigated, url=...`); a `ChatsViewMissing` error means neither the chats URL nor the nav button produced a chat list. The friends view is never read as a room list, so that mix-up fails instead of returning wrong data.
+
+If the login log repeats `login state: unknown` after the PIN step, the QR scan succeeded but the page landed on a view the library does not read. The login flow retries the chats route twice on its own and raises `AppNotReady` pointing at `--dump` if that does not help, so a run never sits there waiting.
 
 If rooms cannot be read after a LINE UI update, save the DOM and send it to tune the selectors:
 

@@ -7,9 +7,18 @@ from playwright.sync_api import Page
 from ..browser import js
 from ..config.selectors import SELECTORS
 from ..config.settings import Settings
+from ..domain.errors import ChatsViewMissing, RoomNotFound
 from ..domain.models import Room
 
 logger = logging.getLogger(__name__)
+
+
+def _no_chats_view() -> ChatsViewMissing:
+    """Typed failure for a page that is not showing the chats list."""
+    return ChatsViewMissing(
+        "the LINE tab is not showing the chats list; run line-ext-msg --dump "
+        "to see the current DOM and tune config/selectors.py"
+    )
 
 
 def _text(locator, timeout: int = 500) -> str:
@@ -94,11 +103,15 @@ def _batch_rooms(page: Page) -> list[dict]:
 
 
 def list_rooms(page: Page, settings: Settings) -> list[Room]:
-    """Extract rooms as Room models. Empty list means not rendered yet."""
+    """Extract rooms as Room models.
+
+    Raises ChatsViewMissing when the chats list never renders, because an
+    empty list reads as "this account has no rooms" and hides a wrong view.
+    """
     try:
         page.wait_for_selector(SELECTORS["room_item"], timeout=settings.selector_ms)
     except Exception:
-        return []
+        raise _no_chats_view() from None
     _scroll_to_load(page, settings)
     batch = _batch_rooms(page)
     if batch:
@@ -141,6 +154,10 @@ def list_rooms(page: Page, settings: Settings) -> list[Room]:
             last_preview=_text(row.locator(SELECTORS["room_preview"])),
             last_time=_text(row.locator(SELECTORS["room_time"])),
         ))
+    if not rooms:
+        # Rows were attached a moment ago but none carried a name, so this is
+        # a layout change rather than an empty account.
+        raise _no_chats_view()
     return rooms
 
 
@@ -149,7 +166,6 @@ def resolve_ref(ref: int | str | Room, rooms: list[Room]) -> Room:
 
     Search order: exact data-mid, case-insensitive substring, contains all words.
     """
-    from ..domain.errors import RoomNotFound
     if isinstance(ref, Room):
         return ref
     if isinstance(ref, int):
@@ -177,14 +193,38 @@ def resolve_ref(ref: int | str | Room, rooms: list[Room]) -> Room:
     raise RoomNotFound(ref, [r.name for r in rooms])
 
 
+def _row_by_mid(rows: list, mid: str):
+    """Row whose data-mid matches, or None when mid is empty or absent."""
+    if not mid:
+        return None
+    for row, _name in rows:
+        try:
+            if (row.get_attribute("data-mid") or "") == mid:
+                return row
+        except Exception:
+            continue
+    return None
+
+
 def open_room(page: Page, ref: int | str | Room, rooms: list[Room], settings: Settings) -> Room:
     """Click a room's Go-chatroom button, wait until chat content shows."""
     room = resolve_ref(ref, rooms)
-    rows = [row for row, _name in _named_rows(page)]
-    if room.index >= len(rows):
-        from ..domain.errors import RoomNotFound
+    rows = _named_rows(page)
+    # data-mid is stable across re-renders, so it beats the list position: the
+    # virtualized list shifts rows around while a room is being opened.
+    row = _row_by_mid(rows, room.id)
+    if row is None and room.index < len(rows):
+        row = rows[room.index][0]
+    if row is None:
         raise RoomNotFound(ref, [r.name for r in rooms])
-    rows[room.index].locator(SELECTORS["room_open"]).click()
+    try:
+        row.locator(SELECTORS["room_open"]).click(timeout=settings.selector_ms)
+    except Exception as e:
+        # A row without the Go-chatroom button cannot be opened, which happens
+        # for the rows LINE renders outside the chat list. Report the rooms
+        # that can be opened instead of surfacing a click timeout.
+        logger.debug("cannot open room %r: %s", room.name, e)
+        raise RoomNotFound(ref, [r.name for r in rooms]) from None
     # Fixed sleep is not enough on slow renders: wait for the chat pane.
     try:
         page.wait_for_selector(SELECTORS["message_list"], timeout=settings.selector_ms)

@@ -25,6 +25,7 @@ from .config.settings import Settings
 from .domain.errors import (
     AppNotReady,
     AttachFailed,
+    ChatsViewMissing,
     ChromeNotReady,
     ExtensionMissing,
     LineError,
@@ -64,4 +65,5 @@ __all__ = [
     "LoginRequired",
     "QrDialogFailed",
     "RoomNotFound",
+    "ChatsViewMissing",
 ]

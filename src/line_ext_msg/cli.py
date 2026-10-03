@@ -122,6 +122,10 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="read only what is on screen, do not scroll back")
     parser.add_argument("--scroll-budget-s", type=float, default=None, metavar="SEC",
                         help="base scroll budget in seconds (default 8)")
+    parser.add_argument("--search-scroll-budget-s", dest="search_scroll_budget_s", type=float,
+                        default=None, metavar="SEC",
+                        help="lower bound in seconds for the per-room scroll budget when a "
+                             "filter is set (default 60); --limit raises it further")
     parser.add_argument("--debug-scroll", dest="debug_scroll", action="store_true", default=None,
                         help="log scroll telemetry each round")
     parser.add_argument("--status", action="store_true",
@@ -138,10 +142,6 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="window title and header text of the QR dialog (default LINE)")
     parser.add_argument("--debug-qr", dest="debug_qr", action="store_true", default=None,
                         help="log login-page diagnostics when the QR capture fails (no secrets)")
-    parser.add_argument("--clear-session", dest="clear_session", action="store_true",
-                        help="wipe the LINE session in the debug profile (keeps the extension)")
-    parser.add_argument("--yes", action="store_true",
-                        help="skip the confirmation for --clear-session")
     parser.add_argument("--verbose", action="store_true", help="log at DEBUG level")
     parser.add_argument("--quiet-log", dest="quiet_log", action="store_true",
                         help="log only warnings and errors")
@@ -150,6 +150,17 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="explicit log level (overrides --verbose/--quiet-log)")
     parser.add_argument("--log-file", dest="log_file", default=None, metavar="PATH",
                         help="also write detailed logs to this file")
+
+    # Subcommands are optional: every query flag above must keep working on
+    # its own, so `line-ext-msg --unread` must not require a command.
+    sub = parser.add_subparsers(dest="command", metavar="COMMAND")
+    logout_parser = sub.add_parser(
+        "logout",
+        help="log out of LINE in the debug profile (keeps the extension)",
+        description="Log out of LINE in the debug profile. Wipes the session and "
+                    "keeps the extension installed.")
+    logout_parser.add_argument("--yes", action="store_true",
+                               help="skip the confirmation")
     return parser
 
 
@@ -159,6 +170,8 @@ def _settings_from_args(args) -> Settings | None:
         overrides["login_wait_ms"] = int(args.login_timeout_s * 1000)
     if args.scroll_budget_s is not None:
         overrides["messages_scroll_ms"] = int(args.scroll_budget_s * 1000)
+    if args.search_scroll_budget_s is not None:
+        overrides["search_scroll_ms"] = int(args.search_scroll_budget_s * 1000)
     if args.debug_scroll:
         overrides["debug_scroll"] = True
     if args.headed:
@@ -189,14 +202,16 @@ def main():
 
     try:
         with LineClient(settings) as line:
-            if args.clear_session:
+            # Logout runs before status(): it must work while logged out, and
+            # status() now waits for the QR by default.
+            if args.command == "logout":
                 if not args.yes:
-                    raw = input("Clear the LINE session in the debug profile? Type yes to confirm > ").strip()
+                    raw = input("Log out of LINE in the debug profile? Type yes to confirm > ").strip()
                     if raw.lower() not in ("yes", "y"):
                         print("Cancelled, nothing removed")
                         return
-                summary = line.clear_session(backup=True)
-                print(f"Session cleared: backup={summary.get('backup')} wiped={summary.get('wiped')}")
+                summary = line.logout(backup=True)
+                print(f"Logged out: backup={summary.get('backup')} wiped={summary.get('wiped')}")
                 return
             if args.dump:
                 dom = line.dump_page()
@@ -224,12 +239,22 @@ def main():
             if args.save:
                 print(f"Saved {rooms.save(paths.ROOMS_JSON)} ({len(rooms)} rooms)")
             if args.search:
+                partial: list[str] = []
                 for hit in line.search_all(args.search,
                                            date_from=args.date_from or args.date,
                                            date_to=args.date_to or args.date):
-                    print(f"\n== {hit['room']['name']} ({len(hit['messages'])} messages) ==")
+                    name = hit["room"]["name"]
+                    print(f"\n== {name} ({len(hit['messages'])} messages) ==")
+                    if hit.get("truncated"):
+                        partial.append(name)
+                        print("   (partial: the scroll budget ran out before the oldest message)")
                     for m in hit["messages"]:
                         print(f"[{m['date']} {m['ts']}] {_who(m['sender'])}{_display_dict(m)}")
+                # A room that hit the budget may match further back, so say so
+                # rather than letting an empty list read as "no match".
+                if partial:
+                    print(f"\nPartial scan, search further back with a bigger budget "
+                          f"(--search-scroll-budget-s): {', '.join(partial)}")
                 return
             chosen = pick_room(rooms)
             limit = max(0, args.limit) if args.limit is not None else ask_limit()

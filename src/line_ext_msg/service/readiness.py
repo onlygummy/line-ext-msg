@@ -36,6 +36,20 @@ logger = logging.getLogger(__name__)
 
 TOTAL_STEPS = 5
 
+# Consecutive rounds the page may stay unclassifiable before the login flow
+# assumes it is logged in on the wrong view rather than still settling. The
+# poll sleeps 500ms, so 4 rounds is about two seconds of grace.
+_UNKNOWN_GRACE = 4
+# How many times the chats route may be retried before giving up. Two is
+# enough for a redirect plus a slow re-render and still terminates.
+_UNKNOWN_RECOVERIES = 2
+
+_UNMATCHED_PAGE = (
+    "the LINE page shows neither the login screen nor the chats list, so the "
+    "extension UI probably changed; run line-ext-msg --dump and send "
+    "session/dumps/line_dom.html to tune the selectors"
+)
+
 
 def switch_mode(client, headless: bool, open_page: bool = True) -> None:
     """Converge Chrome to the wanted mode and reattach the LINE page.
@@ -130,11 +144,17 @@ def _wait_for_qr(page, timeout_ms: int) -> str:
 def _qr_login(client) -> str:
     """Show the QR in a dialog and wait until login or the user closes it.
 
-    There is no timeout on purpose: the caller waits until the QR is
-    scanned or the window is closed. Returns 'ok' when logged in, 'cancel'
-    when the dialog was closed, or 'fallback' when the QR canvas could not
-    be captured (the caller should pop a headed window instead). Raises
-    QrDialogFailed when the dialog process cannot be started.
+    Returns 'ok' when logged in, 'cancel' when the dialog was closed,
+    'fallback' when the QR canvas could not be captured (the caller should pop
+    a headed window instead), and 'stuck' when the page matches no known view
+    and the chats route could not fix it. Raises QrDialogFailed when the dialog
+    process cannot be started.
+
+    An unclassifiable page is the interesting case. LINE lands on its own view
+    after auth, so 'unknown' usually means "logged in somewhere else" rather
+    than "still logging in", and the old loop only spun until the user closed
+    the dialog. It now retries the chats route a bounded number of times and
+    then gives up with a pointer to --dump instead of hanging.
     """
     page = client._page
     settings: Settings = client.settings
@@ -168,13 +188,35 @@ def _qr_login(client) -> str:
     logger.info("QR shown in the dialog (close it to cancel)")
 
     logged = False
+    stuck = False
     shown = data_uri
+    unclassified = 0
+    recoveries = 0
     try:
         while True:
-            ok, _ = auth.check_login(page, timeout_ms=500)
+            ok, reason = auth.check_login(page, timeout_ms=500)
             if ok:
                 logged = True
                 break
+            if reason == "unknown":
+                unclassified += 1
+                if unclassified >= _UNKNOWN_GRACE:
+                    # Safe to reload here and only here: the login screen does
+                    # not match, so there is no half-entered code to lose.
+                    if recoveries < _UNKNOWN_RECOVERIES:
+                        recoveries += 1
+                        unclassified = 0
+                        logger.info("no login screen and no chat list; "
+                                    "switching to the chats view")
+                        if session.ensure_chats_view(page, settings) == "failed":
+                            stuck = True
+                            break
+                        continue
+                    logger.error(_UNMATCHED_PAGE)
+                    stuck = True
+                    break
+            else:
+                unclassified = 0
             if not dialog.alive():
                 logger.info("dialog closed by the user; cancelling login")
                 break
@@ -198,7 +240,7 @@ def _qr_login(client) -> str:
     finally:
         dialog.finish("done" if logged else "cancel")
 
-    return "ok" if logged else "cancel"
+    return "ok" if logged else "stuck" if stuck else "cancel"
 
 
 def _print_keep_open(client) -> None:
@@ -331,17 +373,35 @@ def run(client, wait_for_login: bool | None = None,
             logged_in, reason = auth.wait_for_login(client._page, wait_ms, on_tick=_tick)
         elif outcome == "ok":
             logged_in, reason = True, "chat"
+        elif outcome == "stuck":
+            # The login may well have succeeded on a view we do not read, so
+            # this is a rendering problem rather than a missing login.
+            record("Logged in", False, detail=_UNMATCHED_PAGE)
+            steps.skip_rest("page did not match a known view")
+            raise AppNotReady(_UNMATCHED_PAGE)
         else:
             logged_in, reason = False, "login"
-        if logged_in:
-            record("Logged in", True, detail="logged in while waiting")
-            _print_keep_open(client)
-            return results
+        waited_ok = logged_in
+    else:
+        waited_ok = False
 
-    detail = "page structure does not match known selectors" if reason == "unknown" and not logged_in else ""
-    if not record("Logged in", logged_in,
-                  detail=detail,
-                  hint="open the LINE tab and log in with QR/email, then run again").passed:
+    if waited_ok:
+        detail = "logged in while waiting"
+    else:
+        detail = "page structure does not match known selectors" if reason == "unknown" and not logged_in else ""
+    if not record("Logged in", logged_in, detail=detail,
+                  hint="" if logged_in else
+                  "open the LINE tab and log in with QR/email, then run again").passed:
         steps.skip_rest("waiting for login")
         raise LoginRequired("not logged in to LINE")
+
+    # LINE lands on its own view after auth, so the chats route has to be
+    # re-checked here instead of only before the login screen appeared. One
+    # exit point keeps that check from being skipped on the waiting path.
+    how = session.ensure_chats_view(client._page, client.settings)
+    if how == "failed":
+        # Not fatal here: list_rooms refuses to read a page that is not the
+        # chats view, so the failure lands on the call that asked for rooms.
+        logger.warning("could not reach the chats view; room queries will fail until it renders")
+    _print_keep_open(client)
     return results

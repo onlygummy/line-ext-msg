@@ -5,7 +5,8 @@ from typing import cast
 import pytest
 from playwright.sync_api import Page
 
-from line_ext_msg.domain.errors import RoomNotFound
+from line_ext_msg.config.selectors import SELECTORS
+from line_ext_msg.domain.errors import ChatsViewMissing, RoomNotFound
 from line_ext_msg.domain.models import Room
 from line_ext_msg.scraper import rooms
 from tests.helpers import make_settings as _settings
@@ -21,11 +22,14 @@ class _Text:
 
 
 class _Row:
-    def __init__(self, mid, fields):
+    def __init__(self, mid, fields, can_open=True):
         self._mid = mid
         self._fields = fields
+        self.can_open = can_open
+        self.clicks = 0
 
-    def locator(self, _sel):
+    def locator(self, sel):
+        self._sel = sel
         return self
 
     @property
@@ -37,6 +41,11 @@ class _Row:
 
     def get_attribute(self, name):
         return self._mid if name == "data-mid" else ""
+
+    def click(self, timeout=0):
+        self.clicks += 1
+        if not self.can_open:
+            raise RuntimeError("no Go chatroom button in this row")
 
 
 class _Items:
@@ -58,15 +67,19 @@ class _Items:
 
 
 class _FakePage:
-    def __init__(self, batch=None, rows=None, counts=None, fail_batch=False):
+    def __init__(self, batch=None, rows=None, counts=None, fail_batch=False,
+                 no_selector=False):
         self._batch = batch
         self._rows = rows or []
         self._counts = list(counts or [])
         self.fail_batch = fail_batch
+        self.no_selector = no_selector
         self.evals = 0
         self.sleeps = 0
 
     def wait_for_selector(self, _sel, timeout=0, state=None):
+        if self.no_selector:
+            raise RuntimeError("selector never matched")
         return True
 
     def locator(self, _sel):
@@ -216,3 +229,40 @@ def test_scroll_stops_on_the_budget_when_counts_keep_growing():
     # 800ms budget at a 400ms step: one initial count plus two rounds.
     assert page.sleeps == 2
     assert page.evals == 3
+
+
+def test_list_rooms_raises_when_the_chats_list_never_renders():
+    """An empty list would read as an account with no rooms, so the wrong view
+    has to be an error instead."""
+    page = _FakePage(no_selector=True)
+    with pytest.raises(ChatsViewMissing):
+        rooms.list_rooms(cast(Page, page), _settings())
+
+
+def test_room_selectors_do_not_fall_back_to_the_friends_list():
+    """A union here is what let friend names be read as rooms."""
+    for key in ("room_list", "room_item", "room_name", "room_unread", "room_preview"):
+        assert "friendlist" not in SELECTORS[key], key
+
+
+def test_open_room_finds_the_row_by_data_mid():
+    rows = [_Row("m1", {"name": "Family"}), _Row("m2", {"name": "Work"})]
+    page = _FakePage(rows=rows)
+    found = [
+        Room(index=0, id="m1", name="Family"),
+        Room(index=1, id="m2", name="Work"),
+    ]
+    # index 0 would click the first row, so the click on m2 proves the lookup
+    # used data-mid rather than the position.
+    room = rooms.open_room(cast(Page, page), found[1], found, _settings())
+    assert room.name == "Work"
+    assert rows[0].clicks == 0
+    assert rows[1].clicks == 1
+
+
+def test_open_room_reports_a_row_without_the_chat_button():
+    rows = [_Row("m1", {"name": "Family"}, can_open=False)]
+    page = _FakePage(rows=rows)
+    known = [Room(index=0, id="m1", name="Family")]
+    with pytest.raises(RoomNotFound):
+        rooms.open_room(cast(Page, page), known[0], known, _settings())
