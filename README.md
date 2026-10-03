@@ -29,7 +29,7 @@ with LineClient(quiet=True) as line:
 
 | Method | Returns | Notes |
 |---|---|---|
-| `status(wait_for_login=None, login_timeout_ms=None)` | `list[StepResult]` | runs the 5 readiness checks; raises a typed `LineError` on the first failure |
+| `status(wait_for_login=None, login_timeout_ms=None)` | `list[StepResult]` | runs the 5 readiness checks and waits for the QR by default; raises a typed `LineError` on the first failure |
 | `list_rooms(unread_only=False, query=None)` | `Rooms` | `list[Room]`; `query` matches the room name substring |
 | `open_room(ref)` | `Room` | `ref` is an index, a `data-mid`, a name substring, or a `Room` |
 | `get_messages(room=None, limit=5, ...)` | `Messages` | `list[Message]`; date/time, sender, and keyword filters |
@@ -116,10 +116,10 @@ with LineClient(quiet=True) as line:
 
 `status()` runs five checks (Chrome, CDP attach, extension, page ready, login) and raises a typed error on the first failure: `ChromeNotReady`, `AttachFailed`, `ExtensionMissing`, `AppNotReady`, `LoginRequired`, or `QrDialogFailed`.
 
-- With `quiet=True` (recommended for a service) it does not block: if no one is logged in it raises `LoginRequired` right away.
-- With `status(wait_for_login=True)` it shows the QR in a small Tk dialog on the machine, waits until you scan or close it, and asks for the PIN code on the phone when LINE requires it. Use `login_timeout_ms` to bound the wait.
+- `status()` waits by default: when no one is logged in it shows the QR in a small Tk dialog on the machine, waits until you scan or close it, and asks for the PIN code on the phone when LINE requires it. Use `login_timeout_ms` to bound the wait.
+- With `status(wait_for_login=False)` it does not block: if no one is logged in it raises `LoginRequired` right away.
 
-The dialog is currently the only login UI: there is no callback yet for an embedding app to fetch the QR image or the PIN and render it itself. A headless service should either keep a logged-in Chrome running, or run once interactively to log in and then reuse that instance.
+The dialog is currently the only login UI: there is no callback yet for an embedding app to fetch the QR image or the PIN and render it itself. A headless service should pass `wait_for_login=False`, so a missing login surfaces as `LoginRequired` instead of a wait, or keep a logged-in Chrome running.
 
 The LINE session is tied to the running Chrome process, not to disk. The token stays in Local Storage (`lcs_secure_<mid>`, about 3.2 KB), but the key that decrypts it lives in the extension's sandboxed `ltsmSandbox.html`, which has no persistent storage, so a fresh Chrome asks for the QR again. The library therefore never restarts a running Chrome just to match a preferred mode: a live instance is reused and stays logged in, so you scan the QR once per Chrome lifetime. Closing Chrome or rebooting requires a new scan. `clear_session()` wipes the session on purpose.
 
@@ -178,11 +178,11 @@ with LineClient(settings) as line:
 | `LINE_EXT_MSG_PROFILE` | `%LOCALAPPDATA%\line-chrome-debug` | isolated debug profile |
 | `LINE_EXT_MSG_PORT` | `9222` | CDP debug port |
 | `LINE_EXT_MSG_HEADLESS` | `1` | run Chrome without a window |
-| `LINE_EXT_MSG_QUIET` | off | do not wait, keep the checklist silent |
+| `LINE_EXT_MSG_QUIET` | off | keep the checklist silent |
 | `LINE_EXT_MSG_QR_ZOOM` | `2` | QR dialog zoom (1-4) |
 | `LINE_EXT_MSG_DIALOG_TITLE` | `LINE` | window title and header text of the QR dialog |
 | `LINE_EXT_MSG_QR_READY_MS` | `20000` | how long to wait for the QR canvas |
-| `LINE_EXT_MSG_ROOMS_SCROLL_MS` | `4000` | room list scroll budget |
+| `LINE_EXT_MSG_ROOMS_SCROLL_MS` | `8000` | room list scroll budget |
 | `LINE_EXT_MSG_MSGS_SCROLL_MS` | `8000` | message backfill scroll budget |
 | `LINE_EXT_MSG_LOGIN_WAIT_MS` | `300000` | login wait for the headed fallback |
 | `LINE_EXT_MSG_READY_MS` | `30000` | app render timeout |
@@ -190,6 +190,7 @@ with LineClient(settings) as line:
 | `LINE_EXT_MSG_OPEN_MS` | `3000` | fallback wait after opening a room |
 | `LINE_EXT_MSG_STOP_GRACEFUL_MS` | `3000` | how long a graceful Chrome close may take before the force kill |
 | `LINE_EXT_MSG_READY_SETTLE_MS` | `200` | extra settle after the app looks ready |
+| `LINE_EXT_MSG_DEBUG_ROOMS` | off | log the ids of room rows skipped for having no name |
 
 ## CLI
 

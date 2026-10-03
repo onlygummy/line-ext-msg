@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Breaking changes
+
+- `status()` waits for a login in every mode. `wait_for_login=None` now resolves to `True` instead of `not settings.quiet`, so `LineClient(quiet=True)` no longer fails fast with `LoginRequired`: it shows the QR dialog and waits. Pass `wait_for_login=False` to get the old behaviour back, and note that a machine with no interactive desktop raises `QrDialogFailed` instead of `LoginRequired`. Both are `LineError` subclasses. `settings.quiet` still only silences the checklist, and `line-ext-msg --wait-login` is now the default for every invocation (`--no-wait-login` is the opt-out)
+
 ## 2.0.0
 
 ### Breaking changes

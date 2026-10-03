@@ -1,11 +1,15 @@
 """Room rows: extract + open, returning Room models."""
 
+import logging
+
 from playwright.sync_api import Page
 
 from ..browser import js
 from ..config.selectors import SELECTORS
 from ..config.settings import Settings
 from ..domain.models import Room
+
+logger = logging.getLogger(__name__)
 
 
 def _text(locator, timeout: int = 500) -> str:
@@ -41,8 +45,8 @@ def _named_rows(page: Page) -> list:
 def _scroll_to_load(page: Page, settings: Settings) -> None:
     """Scroll the room list so virtualized rows render before reading.
 
-    Bounded by settings.rooms_scroll_ms (default 4s): stops early when the
-    row count is stable twice in a row. Skipped entirely when disabled (0).
+    Bounded by settings.rooms_scroll_ms (default 8s): stops early when the
+    row count is stable three times in a row. Skipped entirely when disabled (0).
     """
     if settings.rooms_scroll_ms <= 0:
         return
@@ -53,7 +57,8 @@ def _scroll_to_load(page: Page, settings: Settings) -> None:
     stable = 0
     waited = 0
     step = 400
-    while waited < settings.rooms_scroll_ms and stable < 2:
+    max_stable = 3
+    while waited < settings.rooms_scroll_ms and stable < max_stable:
         try:
             page.evaluate(js.ROOM_SCROLL, {"listSel": SELECTORS["room_list"]})
         except Exception:
@@ -66,7 +71,10 @@ def _scroll_to_load(page: Page, settings: Settings) -> None:
             now = page.locator(SELECTORS["room_item"]).count()
         except Exception:
             return
-        stable = stable + 1 if now == last else 0
+        if now == last:
+            stable += 1
+        else:
+            stable = 0
         last = now
         waited += step
 
@@ -95,12 +103,14 @@ def list_rooms(page: Page, settings: Settings) -> list[Room]:
     batch = _batch_rooms(page)
     if batch:
         rooms: list[Room] = []
+        skipped = []
         for row in batch:
             try:
                 name = (row.get("name") or "").strip()
             except Exception:
                 continue
             if not name:
+                skipped.append(row)
                 continue
             rooms.append(Room(
                 index=len(rooms),
@@ -110,6 +120,11 @@ def list_rooms(page: Page, settings: Settings) -> list[Room]:
                 last_preview=(row.get("preview") or "").strip(),
                 last_time=(row.get("time") or "").strip(),
             ))
+        if settings.debug_rooms and skipped:
+            # Log the row ids only: a row carries the message preview, which
+            # is chat content and does not belong in a log file.
+            logger.debug("skipped %d room rows without a name: %s", len(skipped),
+                         [row.get("mid", "") for row in skipped[:5]])
         if rooms:
             return rooms
     rooms = []
@@ -130,7 +145,10 @@ def list_rooms(page: Page, settings: Settings) -> list[Room]:
 
 
 def resolve_ref(ref: int | str | Room, rooms: list[Room]) -> Room:
-    """Resolve int index, data-mid, Room, or name substring to a Room."""
+    """Resolve int index, data-mid, Room, or name substring to a Room.
+
+    Search order: exact data-mid, case-insensitive substring, contains all words.
+    """
     from ..domain.errors import RoomNotFound
     if isinstance(ref, Room):
         return ref
@@ -139,12 +157,23 @@ def resolve_ref(ref: int | str | Room, rooms: list[Room]) -> Room:
             if room.index == ref:
                 return room
     else:
+        # Exact data-mid match
         for room in rooms:
             if room.id and room.id == ref:
                 return room
-        for room in rooms:
-            if ref in room.name:
-                return room
+        # The guard also protects the word pass below: all() over an empty
+        # word list is True, so a blank ref would otherwise match rooms[0].
+        needle = ref.strip().lower()
+        if needle:
+            # Case-insensitive substring match
+            for room in rooms:
+                if needle in room.name.lower():
+                    return room
+            # Contains all words (for multi-word room names)
+            for room in rooms:
+                room_name_lower = room.name.lower()
+                if all(word in room_name_lower for word in needle.split()):
+                    return room
     raise RoomNotFound(ref, [r.name for r in rooms])
 
 

@@ -1,8 +1,11 @@
 """Headless QR login flow decisions (no browser, no real Tk)."""
 
+import logging
+
 import pytest
 
-from line_ext_msg.domain.errors import QrDialogFailed
+from line_ext_msg.domain.errors import LoginRequired, QrDialogFailed
+from line_ext_msg.output.progress import Steps
 from line_ext_msg.service import readiness
 from tests.helpers import make_settings
 
@@ -93,6 +96,8 @@ class _Client:
         self.settings = settings
         self._context = None
         self._browser = None
+        # Mirrors LineClient: the checklist silence follows settings.quiet.
+        self._steps = Steps(readiness.TOTAL_STEPS, quiet=settings.quiet)
 
 
 @pytest.fixture(autouse=True)
@@ -344,3 +349,80 @@ def test_ensure_headed_switches_when_headless(monkeypatch):
     client = _Client(_Page(), make_settings(headless=True))
     assert readiness._ensure_headed(client) is True
     assert calls == [False]
+
+
+def _patch_startup(monkeypatch, logged_in: bool, reason: str) -> None:
+    """Stub the four startup checks so run() reaches the login decision."""
+    monkeypatch.setattr(readiness.chrome, "is_debug_ready", lambda s, timeout_sec=2: True)
+    monkeypatch.setattr(readiness.session, "connect", lambda s: (None, None, None))
+    monkeypatch.setattr(readiness.session, "check_installed", lambda ctx, s, b: (True, "ok"))
+    monkeypatch.setattr(readiness.session, "ensure_line_page", lambda ctx, s, b: _Page())
+    monkeypatch.setattr(readiness.session, "wait_ready", lambda page, settings: "ready")
+    monkeypatch.setattr(readiness.auth, "check_login",
+                        lambda page, timeout_ms: (logged_in, reason))
+
+
+def _stub_qr_login(monkeypatch, outcome: str, calls: list) -> None:
+    monkeypatch.setattr(readiness, "_qr_login", lambda client: calls.append("qr") or outcome)
+
+
+def test_should_wait_defaults_to_true():
+    assert readiness._should_wait(None) is True
+    assert readiness._should_wait(True) is True
+    assert readiness._should_wait(False) is False
+
+
+def test_run_waits_for_login_by_default_even_when_quiet(monkeypatch):
+    _patch_startup(monkeypatch, logged_in=False, reason="login")
+    calls: list = []
+    _stub_qr_login(monkeypatch, "cancel", calls)
+    # quiet=True only silences the checklist: the wait still happens.
+    client = _Client(_Page(), make_settings(quiet=True))
+    with pytest.raises(LoginRequired):
+        readiness.run(client)
+    assert calls == ["qr"]
+
+
+def test_run_fails_fast_when_wait_for_login_is_false(monkeypatch):
+    _patch_startup(monkeypatch, logged_in=False, reason="login")
+    calls: list = []
+    _stub_qr_login(monkeypatch, "cancel", calls)
+    client = _Client(_Page(), make_settings(quiet=True))
+    with pytest.raises(LoginRequired):
+        readiness.run(client, wait_for_login=False)
+    assert calls == []
+
+
+def test_run_does_not_wait_when_the_login_budget_is_zero(monkeypatch):
+    _patch_startup(monkeypatch, logged_in=False, reason="login")
+    calls: list = []
+    _stub_qr_login(monkeypatch, "cancel", calls)
+    client = _Client(_Page(), make_settings(quiet=True, login_wait_ms=0))
+    with pytest.raises(LoginRequired):
+        readiness.run(client)
+    assert calls == []
+
+
+def test_run_does_not_wait_when_selectors_do_not_match(monkeypatch, caplog):
+    _patch_startup(monkeypatch, logged_in=False, reason="unknown")
+    calls: list = []
+    _stub_qr_login(monkeypatch, "cancel", calls)
+    # An unknown reason means the selectors missed, not that a login is
+    # pending, so no QR dialog and the mismatch is reported instead.
+    client = _Client(_Page(), make_settings(quiet=False))
+    with caplog.at_level(logging.INFO):
+        with pytest.raises(LoginRequired):
+            readiness.run(client)
+    assert calls == []
+    assert "known selectors" in caplog.text
+
+
+def test_run_returns_after_a_successful_wait(monkeypatch):
+    _patch_startup(monkeypatch, logged_in=False, reason="login")
+    calls: list = []
+    _stub_qr_login(monkeypatch, "ok", calls)
+    client = _Client(_Page(), make_settings(quiet=True))
+    steps = readiness.run(client)
+    assert calls == ["qr"]
+    assert steps[-1].name == "Logged in"
+    assert steps[-1].passed is True

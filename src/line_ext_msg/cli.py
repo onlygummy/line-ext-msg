@@ -113,7 +113,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dump-room", type=int, default=None, metavar="INDEX",
                         help="open room INDEX and save its DOM for message selector tuning (session/dumps/)")
     parser.add_argument("--wait-login", dest="wait_login", action="store_true", default=None,
-                        help="wait on the login screen until login finishes (default in human mode)")
+                        help="wait on the login screen until login finishes (default)")
     parser.add_argument("--no-wait-login", dest="no_wait_login", action="store_true",
                         help="stop as soon as the login screen shows")
     parser.add_argument("--login-timeout-s", type=float, default=None, metavar="SEC",

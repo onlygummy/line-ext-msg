@@ -15,7 +15,9 @@ def get_messages(room_name: str, limit: int = 5) -> dict:
     """Return latest messages of the first room matching room_name."""
     try:
         with LineClient(quiet=True) as line:
-            line.status()
+            # wait_for_login=False: a service has nobody to scan the QR, so a
+            # missing login must come back as an error instead of a dialog.
+            line.status(wait_for_login=False)
             room = line.open_room(room_name)
             msgs = line.get_messages(limit=limit)
             return {"ok": True, "room": asdict(room),
@@ -28,7 +30,7 @@ def unread_digest() -> dict:
     """Rooms with unread messages plus latest preview."""
     try:
         with LineClient(quiet=True) as line:
-            line.status()
+            line.status(wait_for_login=False)
             return {"ok": True, "rooms": line.unread_digest()}
     except LineError as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}

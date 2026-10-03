@@ -245,6 +245,16 @@ def _install_extension(client, settings: Settings, detail: str) -> tuple[bool, s
     return session.check_installed(client._context, settings, client._browser)
 
 
+def _should_wait(wait_for_login: bool | None) -> bool:
+    """Whether run() waits for a login when the caller did not say.
+
+    True for every caller, quiet ones included: an explicit
+    wait_for_login=False is the only way to stay fail-fast. settings.quiet is
+    deliberately not an input here, because it only silences the checklist.
+    """
+    return True if wait_for_login is None else wait_for_login
+
+
 def run(client, wait_for_login: bool | None = None,
         login_timeout_ms: int | None = None) -> list[StepResult]:
     """Run the 5 readiness checks. Raises typed LineError on first failure."""
@@ -300,8 +310,9 @@ def run(client, wait_for_login: bool | None = None,
         raise AppNotReady("app did not finish loading in time, try again")
 
     logged_in, reason = auth.check_login(client._page, settings.login_poll_ms)
-    # Interactive CLI waits by default; quiet library use stays fail-fast.
-    should_wait = wait_for_login if wait_for_login is not None else not settings.quiet
+    # Wait for the QR by default; quiet only silences the checklist, so an
+    # embedding app that wants fail-fast must pass wait_for_login=False.
+    should_wait = _should_wait(wait_for_login)
     wait_ms = login_timeout_ms if login_timeout_ms is not None else settings.login_wait_ms
 
     last_ping = [0]

@@ -30,7 +30,7 @@ class Settings:
     selector_ms: int = field(default_factory=lambda: _env_int("LINE_EXT_MSG_SELECTOR_MS", 15000))
     login_poll_ms: int = field(default_factory=lambda: _env_int("LINE_EXT_MSG_LOGIN_MS", 10000))
     login_wait_ms: int = field(default_factory=lambda: _env_int("LINE_EXT_MSG_LOGIN_WAIT_MS", 300000))
-    rooms_scroll_ms: int = field(default_factory=lambda: _env_int("LINE_EXT_MSG_ROOMS_SCROLL_MS", 4000))
+    rooms_scroll_ms: int = field(default_factory=lambda: _env_int("LINE_EXT_MSG_ROOMS_SCROLL_MS", 8000))
     messages_scroll_ms: int = field(default_factory=lambda: _env_int("LINE_EXT_MSG_MSGS_SCROLL_MS", 8000))
     open_room_wait_ms: int = field(default_factory=lambda: _env_int("LINE_EXT_MSG_OPEN_MS", 3000))
     # How long a graceful CDP close may take before the force kill fallback.
@@ -60,6 +60,9 @@ class Settings:
     )
     debug_scroll: bool = field(
         default_factory=lambda: _env("LINE_EXT_MSG_DEBUG_SCROLL", "").lower() in ("1", "true", "yes")
+    )
+    debug_rooms: bool = field(
+        default_factory=lambda: _env("LINE_EXT_MSG_DEBUG_ROOMS", "").lower() in ("1", "true", "yes")
     )
 
     @property

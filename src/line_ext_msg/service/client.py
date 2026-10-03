@@ -64,11 +64,21 @@ class LineClient:
 
     def status(self, wait_for_login: bool | None = None,
                login_timeout_ms: int | None = None) -> list[StepResult]:
-        """Run the 5 readiness checks. Raises typed LineError on first failure."""
+        """Run the 5 readiness checks. Raises typed LineError on first failure.
+
+        wait_for_login defaults to True for every caller, so a login screen
+        shows the QR dialog and waits instead of raising straight away. Pass
+        wait_for_login=False to fail fast, which is what a headless service
+        or an MCP server wants. settings.quiet only silences the checklist.
+        """
         return _readiness.run(self, wait_for_login, login_timeout_ms)
 
     def _ready_page(self):
-        """Page guaranteed ready; runs status() once, then reuses the session."""
+        """Page guaranteed ready; runs status() once, then reuses the session.
+
+        The implicit status() call inherits the waiting default, so the first
+        query of a client that is not logged in yet opens the QR dialog.
+        """
         if self._page is None:
             self.status()
         assert self._page is not None
