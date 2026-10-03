@@ -84,9 +84,10 @@ class _Dialog:
         except Exception:
             pass
 
+        # The pill is the only thing on this row: the app name lives in the
+        # window title bar, so the card header stays empty on the left.
         header = tk.Frame(self.root, bg=BG)
         header.pack(fill="x", padx=22, pady=(18, 0))
-        tk.Label(header, text=self.title, bg=BG, fg=TEXT, font=(FONT, 15, "bold")).pack(side="left")
         self.status_label = tk.Label(
             header, text="", bg=GREEN, fg=BG, font=(FONT, 10, "bold"), padx=10, pady=3
         )
@@ -208,7 +209,7 @@ def main() -> None:
     parser.add_argument("--png", required=True, help="QR image to display")
     parser.add_argument("--status", required=True, help="JSON status file to watch")
     parser.add_argument("--zoom", type=int, default=2, help="image zoom, 1-4")
-    parser.add_argument("--title", default="LINE", help="window title and header text")
+    parser.add_argument("--title", default="LINE", help="window title bar text")
     args = parser.parse_args()
     _Dialog(args.png, args.status, args.zoom, args.title).run()
 
