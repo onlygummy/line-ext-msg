@@ -25,6 +25,63 @@ with LineClient(quiet=True) as line:
 
 `LineClient` is a context manager. On first use it starts (or reuses) the debug Chrome on an isolated profile, and on exit it only detaches: Chrome keeps running so the session survives for the next run.
 
+## Embedding
+
+A host that is not an interactive terminal needs two things the plain API cannot give it: a login it can render itself, and progress on a scan that takes a minute per room.
+
+```python
+from line_ext_msg import LineClient, ScanProgress
+
+pending: dict = {}          # what the host shows the user
+
+def on_qr(data_uri: str) -> None:
+    pending["qr"] = data_uri         # a PNG data URI, send it to your client
+
+def on_pin(pin: str, desc: str) -> None:
+    pending["pin"] = pin             # the code to type on the phone
+
+def on_status(state: str) -> None:
+    if state == "verifying":
+        pending.pop("qr", None)      # submitted; nothing left for the user to do
+        pending.pop("pin", None)
+    else:                            # done | failed | cancelled
+        pending.clear()
+
+def on_progress(tick: ScanProgress) -> None:
+    print(f"{tick.index}/{tick.total} {tick.room.name}: {tick.matched} hits"
+          + (" (partial)" if tick.truncated else ""))
+
+with LineClient(on_qr=on_qr, on_pin=on_pin,
+                on_status=on_status) as line:
+    try:
+        line.status(login_timeout_ms=180_000)   # bounded, raises LoginTimeout
+    except LoginTimeout:
+        return send_login_challenge(pending["qr"], pending["pin"])
+    report = line.search_all("invoice", on_progress=on_progress)
+```
+
+Four rules cover it:
+
+- `wait_for_login` on the constructor is the policy for the whole client, so a query that triggers `status()` on its own cannot quietly start waiting for a human. Precedence is the `status()` argument, then the constructor value, then waiting.
+- Supplying any login callback replaces the Tk dialog rather than adding to it, because on a server there is no desktop for a window. Set `on_qr` to receive the QR and `on_pin` to receive the code. Return `False` from either to end the wait.
+- `on_status` carries only the phases that have no payload of their own. A host keeps showing its last `on_qr` or `on_pin` value until one arrives, which is why there is no "go back to the PIN" event.
+- Every callback is a trust boundary: an exception in one is logged and ignored, so a bug in the host's rendering cannot strand a login.
+
+### Login phases
+
+The Tk dialog and `on_status` share one vocabulary. The viewer renders the same names, so the two renderers cannot drift apart.
+
+| State | Pill | What the user sees | Terminal |
+|---|---|---|---|
+| `waiting` | Waiting | the QR, "Scan with the LINE app" | no |
+| `pin` | Enter code | the code, "Enter this code in the LINE app" | no |
+| `verifying` | Signing in | a spinner, "LINE is opening your chats" | no |
+| `done` | Done | nothing, the window closes | yes |
+| `failed` | Could not continue | nothing, the window closes | yes |
+| `cancelled` | Cancelled | nothing, the window closes | yes |
+
+`verifying` is not cosmetic. Once the code is submitted, LINE moves to a view of its own that is neither the login screen nor the chat list, and recovering from that takes a few seconds. Showing the submitted code through that stretch reads as a hang. A timeout or an unmatched page closes the dialog as `failed` rather than `cancelled`, because the user did not close anything.
+
 ## LineClient at a glance
 
 | Method | Returns | Notes |
@@ -34,12 +91,13 @@ with LineClient(quiet=True) as line:
 | `open_room(ref)` | `Room` | `ref` is an index, a `data-mid`, a name substring, or a `Room` |
 | `get_messages(room=None, limit=5, ...)` | `Messages` | `list[Message]`; date/time, sender, and keyword filters |
 | `unread_digest()` | `Report` | rooms with `unread > 0`, as room dicts |
-| `unread_full(date=None, limit_per_room=20)` | `Report` | unread rooms with their messages (`date=None` means today) |
-| `search_all(keyword, date_from=None, date_to=None, rooms=None, limit_per_room=100)` | `Report` | every room that matched, one room at a time |
+| `unread_full(date=None, limit_per_room=20, on_progress=None)` | `Report` | unread rooms with their messages (`date=None` means today) |
+| `search_all(keyword, date_from=None, date_to=None, rooms=None, limit_per_room=100, on_progress=None)` | `Report` | every room that matched, one room at a time |
 | `dump_page()` | `Dom` | raw chats DOM for selector tuning |
 | `dump_room(ref)` | `Dom` | opens the room and returns its DOM |
 | `probe_session()` | `Probe` | redacted storage probe (key names and lengths only) |
-| `logout(backup=True)` | `dict` | logs out of LINE, wipes the session, keeps the extension |
+| `logout(backup=True)` | `dict` | logs out of LINE, wipes the session, stops the debug Chrome, keeps the extension |
+| `clear_session(backup=True)` | `dict` | deprecated alias for `logout()`, kept for 1.x and 2.x callers |
 | `close()` | `None` | detaches CDP; Chrome keeps running |
 
 `get_messages` also accepts `date`, `date_from`, `date_to`, `time_from`, `time_to`, `sender`, `keyword`, `with_media`, and `scroll`.
@@ -57,7 +115,7 @@ msgs = msgs.download_media("session/media")          # writes the image files
 msgs.save("session/messages.json")                   # writes room + fetched_at + messages
 ```
 
-Upgrading from 1.x: the old `save_rooms`, `save_messages`, and `save_probe` methods are gone, and `get_messages` no longer takes `media_dir` or `include_media_data`. Call `.save(path)` on the result instead, and move image fetching to `with_media=True` plus `download_media(dir)`.
+Upgrading from 1.x: the old `save_rooms`, `save_messages`, and `save_probe` methods are gone, and `get_messages` no longer takes `media_dir` or `include_media_data`. Call `.save(path)` on the result instead, and move image fetching to `with_media=True` plus `download_media(dir)`. `clear_session` is a deprecated alias for `logout()` and logs a warning; it is kept so 1.x and 2.x callers keep working, and will be removed in a future major version.
 
 ## Recipes
 
@@ -114,12 +172,13 @@ with LineClient(quiet=True) as line:
 
 ## Authentication and session
 
-`status()` runs five checks (Chrome, CDP attach, extension, page ready, login) and raises a typed error on the first failure: `ChromeNotReady`, `AttachFailed`, `ExtensionMissing`, `AppNotReady`, `LoginRequired`, or `QrDialogFailed`.
+`status()` runs five checks (Chrome, CDP attach, extension, page ready, login) and raises a typed error on the first failure: `ChromeNotReady`, `AttachFailed`, `ExtensionMissing`, `AppNotReady`, `LoginRequired`, `LoginTimeout`, or `QrDialogFailed`.
 
-- `status()` waits by default: when no one is logged in it shows the QR in a small Tk dialog on the machine, waits until you scan or close it, and asks for the PIN code on the phone when LINE requires it. Use `login_timeout_ms` to bound the wait.
-- With `status(wait_for_login=False)` it does not block: if no one is logged in it raises `LoginRequired` right away.
+- `status()` waits by default: when no one is logged in it shows the QR in a small Tk dialog on the machine, waits until you scan or close it, and asks for the PIN code on the phone when LINE requires it.
+- `login_timeout_ms` bounds that wait, dialog or callback driven. On expiry the call raises `LoginTimeout`, which is a `LoginRequired` subclass: catch it first when the two cases need different handling, since "no session stored" and "session needed but nobody scanned in time" call for different responses. A value of `0` or less skips the QR attempt entirely and fails fast with `LoginRequired`.
+- With `status(wait_for_login=False)` it does not block: if no one is logged in it raises `LoginRequired` right away. Pass `wait_for_login=False` to the constructor instead and every method that needs a ready page inherits it.
 
-The dialog is currently the only login UI: there is no callback yet for an embedding app to fetch the QR image or the PIN and render it itself. A headless service should pass `wait_for_login=False`, so a missing login surfaces as `LoginRequired` instead of a wait, or keep a logged-in Chrome running.
+The Tk dialog is the built-in login UI. To render the QR yourself, pass `on_qr` (and `on_pin`) to the constructor; see [Embedding](#embedding). Supplying any of them suppresses the dialog, so set `on_qr` to get the QR.
 
 The LINE session is tied to the running Chrome process, not to disk. The token stays in Local Storage (`lcs_secure_<mid>`, about 3.2 KB), but the key that decrypts it lives in the extension's sandboxed `ltsmSandbox.html`, which has no persistent storage, so a fresh Chrome asks for the QR again. The library therefore never restarts a running Chrome just to match a preferred mode: a live instance is reused and stays logged in, so you scan the QR once per Chrome lifetime. Closing Chrome or rebooting requires a new scan. `logout()` wipes the session on purpose.
 
@@ -169,7 +228,9 @@ A filtered query has no target row count, so the backfill scroll runs until the 
 - `line-ext-msg --search` prints which rooms were partial and how to dig deeper
 - `Messages.scroll_stop` carries the raw reason: `need`, `top`, `date`, `budget`, `disabled`, or `detached`
 
-Raise `search_scroll_ms` (or pass `--search-scroll-budget-s`) when a room keeps coming back truncated. It is a lower bound, so raising it past `limit * 1000ms` (capped at 300s) has no effect; raise `limit_per_room` for a bigger scan.
+Raise `search_scroll_ms` (or pass `--search-scroll-budget-s`) when a room keeps coming back truncated. It is a lower bound, so raising it past `limit * 1000ms` has no effect; raise `limit_per_room` for a bigger scan, and `scroll_cap_ms` if the limit is what runs into the ceiling. `unread_full` and `search_all` also accept `on_progress`, which reports each room as it is read along with the same `truncated` flag.
+
+An `unread_full` entry can come back with no messages while the room still shows unread, because the unread ones predate `date`. Compare `room["unread"]` with the message count before reading an empty list as "nothing pending".
 
 ## Settings
 
@@ -187,21 +248,26 @@ with LineClient(settings) as line:
 |---|---|---|
 | `LINE_EXT_MSG_PROFILE` | `%LOCALAPPDATA%\line-chrome-debug` | isolated debug profile |
 | `LINE_EXT_MSG_PORT` | `9222` | CDP debug port |
+| `LINE_EXT_MSG_EXTENSION` | the published LINE id | extension id to open and to require on disk |
 | `LINE_EXT_MSG_HEADLESS` | `1` | run Chrome without a window |
 | `LINE_EXT_MSG_QUIET` | off | keep the checklist silent |
-| `LINE_EXT_MSG_QR_ZOOM` | `2` | QR dialog zoom (1-4) |
+| `LINE_EXT_MSG_QR_ZOOM` | `2` | QR dialog zoom, clamped to 1-4 |
 | `LINE_EXT_MSG_DIALOG_TITLE` | `LINE` | window title of the QR dialog |
 | `LINE_EXT_MSG_QR_READY_MS` | `20000` | how long to wait for the QR canvas |
 | `LINE_EXT_MSG_ROOMS_SCROLL_MS` | `8000` | room list scroll budget |
 | `LINE_EXT_MSG_CHATS_ENSURE_MS` | `10000` | how long to wait for the chat list after switching to the chats view |
 | `LINE_EXT_MSG_MSGS_SCROLL_MS` | `8000` | message backfill scroll budget |
 | `LINE_EXT_MSG_SEARCH_SCROLL_MS` | `60000` | lower bound for the per-room scroll budget when a filter is set (keyword, sender, date); the `limit` raises it further, so 0 does not disable scrolling |
-| `LINE_EXT_MSG_LOGIN_WAIT_MS` | `300000` | login wait for the headed fallback |
+| `LINE_EXT_MSG_SCROLL_CAP_MS` | `300000` | ceiling on the budget the `limit` asks for; 0 or less removes it |
+| `LINE_EXT_MSG_LOGIN_MS` | `10000` | how long the login state check waits before it gives up |
+| `LINE_EXT_MSG_LOGIN_WAIT_MS` | `300000` | login wait, for the headed fallback and the QR dialog alike |
 | `LINE_EXT_MSG_READY_MS` | `30000` | app render timeout |
 | `LINE_EXT_MSG_SELECTOR_MS` | `15000` | selector wait timeout |
 | `LINE_EXT_MSG_OPEN_MS` | `3000` | fallback wait after opening a room |
 | `LINE_EXT_MSG_STOP_GRACEFUL_MS` | `3000` | how long a graceful Chrome close may take before the force kill |
 | `LINE_EXT_MSG_READY_SETTLE_MS` | `200` | extra settle after the app looks ready |
+| `LINE_EXT_MSG_DEBUG_QR` | off | log redacted login-page diagnostics when the QR capture fails |
+| `LINE_EXT_MSG_DEBUG_SCROLL` | off | log scroll telemetry each round |
 | `LINE_EXT_MSG_DEBUG_ROOMS` | off | log the ids of room rows skipped for having no name |
 
 ## CLI
@@ -225,12 +291,12 @@ On first run the CLI starts Chrome on the isolated profile. If the LINE extensio
 ## Limitations
 
 - Room and message lists are virtualized; the library scrolls to load more within a time budget. Disable with `scroll=False` or `LINE_EXT_MSG_MSGS_SCROLL_MS=0`; those are the only off switches, since a filtered query raises its own budget from `search_scroll_ms` and the `limit`.
-- A filtered query stops at the oldest message, a date, or its budget, whichever comes first. Its budget is `max(search_scroll_ms, min(limit * 1000s, 300s))`, so it is never shorter than the unfiltered one. A search over a long history can report `truncated` rather than pretending it reached the beginning.
+- A filtered query stops at the oldest message, a date, or its budget, whichever comes first. Its budget is `max(search_scroll_ms, min(limit * 1000ms, scroll_cap_ms))`, so it is never shorter than the unfiltered one. A search over a long history can report `truncated` rather than pretending it reached the beginning.
 - Only the chats view is read. The friends and groups view is never used as a room list, so a LINE build that only offers that view raises `ChatsViewMissing` instead of returning names that are not conversations.
 - Only what the UI renders is readable; there is no per-message read API.
 - `unread_digest`, `unread_full`, and `search_all` return a `Report` (list of dicts), not models.
 - `download_media` only writes what `with_media=True` already fetched; it does not re-open the room.
-- The QR dialog is the only login UI; there is no callback for an app to render the QR itself.
+- Supplying a login callback replaces the Tk dialog, so set `on_qr` to receive the QR and `on_pin` to receive the code. Set none to keep the dialog.
 - Debug Chrome starts with `--disable-notifications` and `--hide-crash-restore-bubble`, so web and push notifications stay off and the restore bubble never appears after a force kill. Toasts an extension raises through `chrome.notifications` are not covered.
 - The session is tied to the running Chrome process, so keep Chrome alive to avoid scanning again.
 - `from_me` is a heuristic (no username means your own message) and is not yet confirmed with a dump that contains your own messages.

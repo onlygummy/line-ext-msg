@@ -3,7 +3,8 @@
 Layers and the imports each one is allowed to make (no cycles):
 
     config   -> nothing                     Settings, SELECTORS, default paths
-    domain   -> nothing                     models, typed errors, pure filters
+    domain   -> nothing                     models, typed errors, callback contracts,
+                                              pure filters
     output   -> config, domain              JSON storage, checklist printer
     results  -> domain, output              savable query results
     browser  -> config, domain              Chrome lifecycle, CDP, login, JS
@@ -22,6 +23,7 @@ details and may change without notice.
 import logging as _logging
 
 from .config.settings import Settings
+from .domain.callbacks import PinCallback, ProgressCallback, QrCallback, StatusCallback
 from .domain.errors import (
     AppNotReady,
     AttachFailed,
@@ -30,15 +32,16 @@ from .domain.errors import (
     ExtensionMissing,
     LineError,
     LoginRequired,
+    LoginTimeout,
     QrDialogFailed,
     RoomNotFound,
 )
 from .domain.filters import sender_stats
-from .domain.models import Message, Room, StepResult
+from .domain.models import Message, Room, ScanProgress, StepResult
 from .results import Dom, Messages, Probe, Report, Rooms
 from .service.client import LineClient
 
-__version__ = "3.0.0"
+__version__ = "3.1.0"
 
 # Library best practice: never emit or configure logging on import. Callers
 # (the CLI, or an embedding app) attach handlers via output.logging.configure.
@@ -51,18 +54,24 @@ __all__ = [
     "Room",
     "Message",
     "StepResult",
+    "ScanProgress",
     "Rooms",
     "Messages",
     "Report",
     "Probe",
     "Dom",
     "Settings",
+    "QrCallback",
+    "PinCallback",
+    "StatusCallback",
+    "ProgressCallback",
     "LineError",
     "ChromeNotReady",
     "AttachFailed",
     "ExtensionMissing",
     "AppNotReady",
     "LoginRequired",
+    "LoginTimeout",
     "QrDialogFailed",
     "RoomNotFound",
     "ChatsViewMissing",

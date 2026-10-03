@@ -21,12 +21,19 @@ import time
 from ..browser import auth, chrome, js, mode, session
 from ..config.selectors import SELECTORS
 from ..config.settings import Settings
+from ..domain.callbacks import (
+    PinCallback,
+    QrCallback,
+    StatusCallback,
+    call_callback,
+)
 from ..domain.errors import (
     AppNotReady,
     AttachFailed,
     ChromeNotReady,
     ExtensionMissing,
     LoginRequired,
+    LoginTimeout,
     QrDialogFailed,
 )
 from ..domain.models import StepResult
@@ -141,14 +148,29 @@ def _wait_for_qr(page, timeout_ms: int) -> str:
             return ""
 
 
-def _qr_login(client) -> str:
-    """Show the QR in a dialog and wait until login or the user closes it.
+def _qr_login(
+    client,
+    timeout_ms: int | None = None,
+    on_qr: QrCallback | None = None,
+    on_pin: PinCallback | None = None,
+    on_status: StatusCallback | None = None,
+) -> str:
+    """Show the QR and wait until login, the host cancels, or time runs out.
 
-    Returns 'ok' when logged in, 'cancel' when the dialog was closed,
+    Returns 'ok' when logged in, 'cancel' when the dialog was closed or a
+    callback returned False, 'timeout' when timeout_ms ran out first,
     'fallback' when the QR canvas could not be captured (the caller should pop
     a headed window instead), and 'stuck' when the page matches no known view
     and the chats route could not fix it. Raises QrDialogFailed when the dialog
     process cannot be started.
+
+    timeout_ms bounds the whole wait. It used to reach only the headed
+    fallback, so the dialog itself was bounded by nothing but a human closing
+    it, and a host driving its own login UI had no way out at all.
+
+    on_qr and on_pin replace the Tk dialog with the host's own login UI.
+    Supplying either one skips the dialog, which is the point on a machine
+    with no desktop; supply both to receive the QR and the PIN.
 
     An unclassifiable page is the interesting case. LINE lands on its own view
     after auth, so 'unknown' usually means "logged in somewhere else" rather
@@ -177,28 +199,68 @@ def _qr_login(client) -> str:
         logger.warning("could not capture the QR (reloaded=%s)", reloaded)
         return "fallback"
 
-    dialog = qr.QrDialog(zoom=settings.qr_zoom, title=settings.dialog_title)
-    try:
-        dialog.open(data_uri)
-    except QrDialogFailed as e:
-        dialog.finish("cancel", keep_png=True)
-        logger.error("%s (open the file manually at %s)", e, dialog.png)
-        raise
+    # Two renderers for the same events. A callback replaces the dialog rather
+    # than adding to it: the reason to pass one is that the host owns the login
+    # UI, and on a headless server there is no desktop for a dialog to appear
+    # on, so showing both would leave the host waiting on a window nobody sees.
+    dialog = None
+    if on_qr is None and on_pin is None and on_status is None:
+        dialog = qr.QrDialog(zoom=settings.qr_zoom, title=settings.dialog_title)
+        try:
+            dialog.open(data_uri)
+        except QrDialogFailed as e:
+            dialog.finish("failed", keep_png=True)
+            logger.error("%s (open the file manually at %s)", e, dialog.png)
+            raise
+        logger.info("QR shown in the dialog (close it to cancel)")
+    elif not call_callback(on_qr, data_uri, what="qr"):
+        logger.info("host declined the QR; cancelling login")
+        return "cancel"
 
-    logger.info("QR shown in the dialog (close it to cancel)")
+    def _verifying(entered: bool) -> None:
+        """Move the login UI in or out of the verifying state.
+
+        Entering hides the QR or PIN the user already dealt with, because the
+        page is now somewhere else entirely and there is nothing to do. Leaving
+        is only needed for the dialog: it swapped its content out, so it has to
+        put the previous step back. A host keeps showing its last payload, which
+        is why there is no resume event for on_status.
+        """
+        if dialog is not None:
+            if entered:
+                dialog.set_verifying()
+            else:
+                dialog.resume()
+        elif entered:
+            call_callback(on_status, "verifying", what="status")
 
     logged = False
     stuck = False
+    timed_out = False
     shown = data_uri
     unclassified = 0
     recoveries = 0
+    # Deadline covers capture-independent waiting only; _wait_for_qr keeps its
+    # own qr_ready_ms budget, so a full run is bounded by the sum of the two.
+    deadline = None
+    if timeout_ms is not None and timeout_ms > 0:
+        deadline = time.monotonic() + timeout_ms / 1000
     try:
         while True:
+            if deadline is not None and time.monotonic() >= deadline:
+                logger.warning("login wait timed out after %dms", timeout_ms)
+                timed_out = True
+                break
             ok, reason = auth.check_login(page, timeout_ms=500)
             if ok:
                 logged = True
                 break
             if reason == "unknown":
+                if unclassified == 0:
+                    # First unknown after a step we could classify. Post-PIN
+                    # this is LINE landing on its own view, so the UI should
+                    # stop asking the user to do something.
+                    _verifying(True)
                 unclassified += 1
                 if unclassified >= _UNKNOWN_GRACE:
                     # Safe to reload here and only here: the login screen does
@@ -216,31 +278,68 @@ def _qr_login(client) -> str:
                     stuck = True
                     break
             else:
+                if unclassified:
+                    # The page is classifiable again, so the unknown stretch was
+                    # a rendering hiccup. Put the previous step back.
+                    _verifying(False)
                 unclassified = 0
-            if not dialog.alive():
+            if dialog is not None and not dialog.alive():
                 logger.info("dialog closed by the user; cancelling login")
                 break
             pin, desc = _login_pin(page)
             if pin:
                 logger.info("PIN requested (len=%d)", len(pin))
-                dialog.set_pin(pin, desc)
+                if dialog is not None:
+                    dialog.set_pin(pin, desc)
+                if not call_callback(on_pin, pin, desc, what="pin"):
+                    logger.info("host cancelled the login wait")
+                    break
             else:
                 # Keep the PIN visible while verification runs: only go back
                 # to the QR when a genuinely new one appears, otherwise a
                 # stale QR image flashes after the code is entered.
                 uri = _qr_data(page)
                 if uri and uri != shown:
-                    logger.info("new QR detected; refreshing the dialog")
-                    dialog.show_qr(uri)
+                    logger.info("new QR detected; refreshing the login UI")
                     shown = uri
+                    if dialog is not None:
+                        dialog.show_qr(uri)
+                    if not call_callback(on_qr, uri, what="qr"):
+                        logger.info("host cancelled the login wait")
+                        break
             try:
                 page.wait_for_timeout(500)
             except Exception:
                 break
     finally:
-        dialog.finish("done" if logged else "cancel")
+        terminal = _terminal_state(logged, timed_out, stuck)
+        if dialog is not None:
+            dialog.finish(terminal)
+        elif terminal != "cancelled":
+            # A host that cancelled did it from its own callback, so it already
+            # knows; only report the outcomes it cannot infer.
+            call_callback(on_status, terminal, what="status")
 
-    return "ok" if logged else "stuck" if stuck else "cancel"
+    if logged:
+        return "ok"
+    if timed_out:
+        return "timeout"
+    return "stuck" if stuck else "cancel"
+
+
+def _terminal_state(logged: bool, timed_out: bool, stuck: bool) -> str:
+    """Which login state closes the wait. Pure, so the truth table is testable.
+
+    A timeout or an unmatched page is a failure, not a cancel: nobody closed
+    anything, so telling the user "Cancelled" was reporting the library giving
+    up as if it were their decision. The names match qr.STATE_COPY, which is
+    also what a host receives through on_status.
+    """
+    if logged:
+        return "done"
+    if timed_out or stuck:
+        return "failed"
+    return "cancelled"
 
 
 def _print_keep_open(client) -> None:
@@ -299,7 +398,12 @@ def _should_wait(wait_for_login: bool | None) -> bool:
 
 def run(client, wait_for_login: bool | None = None,
         login_timeout_ms: int | None = None) -> list[StepResult]:
-    """Run the 5 readiness checks. Raises typed LineError on first failure."""
+    """Run the 5 readiness checks. Raises typed LineError on first failure.
+
+    login_timeout_ms bounds the whole login wait, whether the QR is rendered
+    by the Tk dialog or by host callbacks. A value of 0 or less skips the QR
+    attempt entirely and fails fast with LoginRequired.
+    """
     settings: Settings = client.settings
     steps = client._steps
     logger.info("[0/5] checking prerequisites")
@@ -366,7 +470,8 @@ def run(client, wait_for_login: bool | None = None,
             logger.info("waiting for login (%ds)", elapsed_ms // 1000)
 
     if not logged_in and reason == "login" and should_wait and wait_ms > 0:
-        outcome = _qr_login(client)
+        outcome = _qr_login(client, wait_ms, on_qr=client.on_qr, on_pin=client.on_pin,
+                           on_status=client.on_status)
         if outcome == "fallback":
             _ensure_headed(client)
             logger.info("log in the Chrome window (Ctrl+C to cancel)")
@@ -381,8 +486,10 @@ def run(client, wait_for_login: bool | None = None,
             raise AppNotReady(_UNMATCHED_PAGE)
         else:
             logged_in, reason = False, "login"
+        timed_out = outcome == "timeout"
         waited_ok = logged_in
     else:
+        timed_out = False
         waited_ok = False
 
     if waited_ok:
@@ -393,6 +500,13 @@ def run(client, wait_for_login: bool | None = None,
                   hint="" if logged_in else
                   "open the LINE tab and log in with QR/email, then run again").passed:
         steps.skip_rest("waiting for login")
+        if timed_out:
+            # Distinct from LoginRequired so a host can tell "no session" from
+            # "session needed, nobody scanned in time" and react differently.
+            raise LoginTimeout(
+                f"no login completed within {wait_ms}ms; raise login_timeout_ms "
+                f"or log in once by hand"
+            )
         raise LoginRequired("not logged in to LINE")
 
     # LINE lands on its own view after auth, so the chats route has to be

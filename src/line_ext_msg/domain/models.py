@@ -38,3 +38,21 @@ class StepResult:
     name: str
     passed: bool
     detail: str = ""
+
+
+@dataclass(frozen=True)
+class ScanProgress:
+    """One tick from a multi-room scan (unread_full, search_all).
+
+    Those scans walk rooms one at a time and each one can spend up to the
+    scroll budget, so a host that wants to show progress needs a tick per
+    room. truncated rides along on every tick so "this room may be missing
+    older matches" can be surfaced while the scan is still running, not only
+    when the report comes back.
+    """
+
+    room: Room  # the room this tick is about
+    index: int  # 1-based position in the scan
+    total: int  # how many rooms the scan covers
+    matched: int  # messages kept for this room
+    truncated: bool  # backfill hit its budget, so older matches may be missing

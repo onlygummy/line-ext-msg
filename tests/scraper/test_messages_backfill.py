@@ -386,6 +386,29 @@ def test_filtered_budget_still_scales_with_a_large_limit(monkeypatch):
     assert seen[0][1] == 100000
 
 
+def test_filtered_budget_respects_a_raised_scroll_cap(monkeypatch):
+    """The 300s ceiling used to be hardcoded, so a room with a long archive
+    reported truncated forever with no way to ask for more."""
+    seen = _record_budget(monkeypatch)
+    page = _SlidingPage([_win(1789175000000, [0, 1])])
+    messages.get_messages(
+        cast(Page, page),
+        _settings(search_scroll_ms=60000, scroll_cap_ms=900000),
+        limit=1000, keyword="x", scroll=True)
+    # max(60000, min(1000 * 1000, 900000)) = 900000
+    assert seen[0][1] == 900000
+
+
+def test_scroll_cap_of_zero_lets_the_limit_decide(monkeypatch):
+    seen = _record_budget(monkeypatch)
+    page = _SlidingPage([_win(1789175000000, [0, 1])])
+    messages.get_messages(
+        cast(Page, page),
+        _settings(search_scroll_ms=60000, scroll_cap_ms=0),
+        limit=1000, keyword="x", scroll=True)
+    assert seen[0][1] == 60000
+
+
 def test_scroll_stop_is_carried_on_the_result(monkeypatch):
     monkeypatch.setattr(messages._scroll, "scroll_to_fill",
                         lambda *_a, **_k: "budget")
@@ -508,6 +531,22 @@ def test_small_need_keeps_base_budget():
         scroll.SELECTORS = old
     assert reason == "budget"
     assert page.sleeps == 1
+
+
+def test_need_derived_budget_respects_the_scroll_cap():
+    """The unfiltered path scaled with need against the same hardcoded 300s."""
+    page = _FakePage(start=5, total=50, slow_rounds=999, date_shifts=9999)
+    old = _patch_selectors(scroll, message_item="msg")
+    try:
+        reason = scroll.scroll_to_fill(
+            cast(Page, page),
+            _settings(messages_scroll_ms=500, scroll_cap_ms=3000),
+            need=100)
+    finally:
+        scroll.SELECTORS = old
+    # max(500, min(100 * 1000, 3000)) = 3000ms = 3 rounds at 1000ms.
+    assert reason == "budget"
+    assert page.sleeps == 3
 
 
 def test_wheel_fallback_wakes_wheel_only_loader():

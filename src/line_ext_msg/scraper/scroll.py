@@ -213,7 +213,7 @@ def scroll_to_fill(
     # need/top/date instead of timing out mid-history.
     budget = settings.messages_scroll_ms
     if need:
-        budget = max(budget, min(need * 1000, 300000))
+        budget = max(budget, min(need * 1000, settings.scroll_cap_ms))
     if budget_ms is not None:
         # An explicit budget replaces the need-derived one: it is the caller's
         # search-depth policy, and `need` cannot express "no target".

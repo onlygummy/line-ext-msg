@@ -18,8 +18,15 @@ from dataclasses import asdict
 from ..browser import process as _process
 from ..config import paths
 from ..config.settings import Settings
+from ..domain.callbacks import (
+    PinCallback,
+    ProgressCallback,
+    QrCallback,
+    StatusCallback,
+    call_callback,
+)
 from ..domain.errors import LineError
-from ..domain.models import Room, StepResult
+from ..domain.models import Room, ScanProgress, StepResult
 from ..output.progress import Steps
 from ..results import Dom, Messages, Probe, Report, Rooms
 from ..scraper import messages as _messages
@@ -32,15 +39,42 @@ logger = logging.getLogger(__name__)
 
 
 class LineClient:
-    """Owns ensure-chrome, attach, page, and readiness. Use as context manager."""
+    """Owns ensure-chrome, attach, page, and readiness. Use as context manager.
 
-    def __init__(self, settings: Settings | None = None, **overrides):
+    wait_for_login sets the instance-wide login policy so a host does not have
+    to repeat it at every call site: without it, any method that needs a ready
+    page would silently fall back to waiting for a QR, which is wrong for an
+    unattended service. Pass False there and the whole client fails fast.
+
+on_qr and on_pin hand the login UI to the host instead of the Tk dialog.
+    Supplying any of them suppresses the dialog, so set on_qr to receive the QR
+    and on_pin to receive the code. on_status carries the phases that have no
+    payload of their own, which is how a host learns to stop showing a code the
+    user already submitted. The wait is still bounded by login_timeout_ms.
+    """
+
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        *,
+        wait_for_login: bool | None = None,
+        on_qr: QrCallback | None = None,
+        on_pin: PinCallback | None = None,
+        on_status: StatusCallback | None = None,
+        **overrides,
+    ):
         self.settings = settings or Settings(**overrides)
         self._steps = Steps(_readiness.TOTAL_STEPS, quiet=self.settings.quiet)
         self._pw = None
         self._browser = None
         self._context = None
         self._page = None
+        # Kept on the instance because every method that needs a ready page
+        # inherits them through status().
+        self._wait_policy = wait_for_login
+        self.on_qr = on_qr
+        self.on_pin = on_pin
+        self.on_status = on_status
 
     # -- lifecycle ----------------------------------------------------
 
@@ -66,18 +100,24 @@ class LineClient:
                login_timeout_ms: int | None = None) -> list[StepResult]:
         """Run the 5 readiness checks. Raises typed LineError on first failure.
 
-        wait_for_login defaults to True for every caller, so a login screen
-        shows the QR dialog and waits instead of raising straight away. Pass
-        wait_for_login=False to fail fast, which is what a headless service
-        or an MCP server wants. settings.quiet only silences the checklist.
+        wait_for_login decides whether a login screen opens the QR dialog and
+        waits, or raises LoginRequired at once. Precedence is the argument
+        here, then the value given to the constructor, then waiting. Left unset
+        it waits, because a library that assumes an interactive desktop is not
+        safe to embed; an unattended caller passes wait_for_login=False once, to
+        the constructor or here. settings.quiet only silences the checklist.
         """
+        if wait_for_login is None:
+            wait_for_login = self._wait_policy
         return _readiness.run(self, wait_for_login, login_timeout_ms)
 
     def _ready_page(self):
         """Page guaranteed ready; runs status() once, then reuses the session.
 
-        The implicit status() call inherits the waiting default, so the first
-        query of a client that is not logged in yet opens the QR dialog.
+        The implicit status() call inherits the instance wait policy, so a
+        client built with wait_for_login=False stays fail-fast even when the
+        caller never passes the flag, and a client that did not set one still
+        opens the QR dialog on its first query.
         """
         if self._page is None:
             self.status()
@@ -139,11 +179,20 @@ class LineClient:
         """Rooms with unread>0 plus latest preview, as a Report."""
         return Report(asdict(r) for r in self.list_rooms(unread_only=True))
 
-    def unread_full(self, date: str | None = None, limit_per_room: int = 20) -> Report:
+    def unread_full(self, date: str | None = None, limit_per_room: int = 20,
+                     on_progress: ProgressCallback | None = None) -> Report:
         """Unread rooms with their messages. date=None means today (local).
 
         Each entry carries "truncated": true when the backfill scroll hit its
         time budget, which means older messages of that day may be missing.
+
+        An entry can come back empty while the room still shows unread: the
+        unread messages may predate `date`. Compare room["unread"] with the
+        message count before reading an empty list as "nothing pending".
+
+        on_progress gets one ScanProgress per room as it is read, carrying the
+        same truncated flag, so a host can report progress on a scan that takes
+        a minute per room without polling.
         """
         from datetime import date as _date
         day = date or _date.today().isoformat()
@@ -155,8 +204,15 @@ class LineClient:
             # whole chat list again for every room.
             _rooms.open_room(self._ready_page(), room, unread, self.settings)
             msgs = self.get_messages(limit=limit_per_room, date=day)
+            truncated = msgs.scroll_stop == "budget"
+            call_callback(
+                on_progress,
+                ScanProgress(room=room, index=i + 1, total=len(unread),
+                             matched=len(msgs), truncated=truncated),
+                what="progress",
+            )
             out.append({"room": asdict(room), "messages": [asdict(m) for m in msgs],
-                        "truncated": msgs.scroll_stop == "budget"})
+                        "truncated": truncated})
         return out
 
     def search_all(
@@ -166,6 +222,7 @@ class LineClient:
         date_to: str | None = None,
         rooms: list[int | str | Room] | None = None,
         limit_per_room: int = 100,
+        on_progress: ProgressCallback | None = None,
     ) -> Report:
         """Search keyword across rooms. Sequential, one room at a time.
 
@@ -174,7 +231,12 @@ class LineClient:
         room is listed even when it matched nothing, because a partial scan
         cannot claim a keyword is absent; an empty "messages" with
         "truncated": true means "not reached", not "not there". Raise
-        settings.search_scroll_ms to finish those rooms.
+        settings.search_scroll_ms, or settings.scroll_cap_ms when the limit
+        itself is the ceiling, to finish those rooms.
+
+        on_progress gets one ScanProgress per room, including the truncated
+        ones, so a host can report both progress and partial results as they
+        happen instead of only at the end.
         """
         targets: list[Room] = list(self.list_rooms())
         if rooms is not None:
@@ -196,6 +258,12 @@ class LineClient:
             truncated = msgs.scroll_stop == "budget"
             if truncated:
                 partial.append(room.name)
+            call_callback(
+                on_progress,
+                ScanProgress(room=room, index=i + 1, total=len(targets),
+                             matched=len(msgs), truncated=truncated),
+                what="progress",
+            )
             if msgs or truncated:
                 out.append({"room": asdict(room), "messages": [asdict(m) for m in msgs],
                             "truncated": truncated})
@@ -221,9 +289,12 @@ class LineClient:
     def logout(self, backup: bool = True) -> dict:
         """Log out of LINE by wiping the session; extension install stays.
 
-        backup=True saves a redacted probe to session/ first. Stops debug
-        Chrome before the on-disk wipe, so the next status() finds no session
-        and shows the QR dialog again.
+        This also stops the debug Chrome, so the next status() finds no
+        session and asks for a new QR scan. That is deliberate: the extension
+        keeps the session token in memory, so wiping storage alone would leave
+        a Chrome that looks logged in and cannot be trusted.
+
+        backup=True saves a redacted probe to session/ first.
         """
         summary: dict = {}
         if backup:
@@ -244,6 +315,15 @@ class LineClient:
         _process.terminate_debug_chrome(self.settings)
         summary["wiped"] = _maintenance.clear_on_disk(self.settings)
         return summary
+
+    def clear_session(self, backup: bool = True) -> dict:
+        """Deprecated alias for logout(); call logout() instead.
+
+        Kept so an app written against 1.x or 2.x does not break on upgrade.
+        Note it stops the debug Chrome too, exactly like logout() does.
+        """
+        logger.warning("clear_session() is deprecated; call logout() instead")
+        return self.logout(backup=backup)
 
     def probe_session(self) -> Probe:
         """Redacted storage probe: shows where the login token lives.

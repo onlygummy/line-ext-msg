@@ -1,7 +1,16 @@
 """Settings: all runtime knobs, overridable via LINE_EXT_MSG_* env vars."""
 
+import logging
 import os
 from dataclasses import dataclass, field
+
+logger = logging.getLogger(__name__)
+
+# The QR canvas is small, so 2x is readable without the blockiness of a larger
+# nearest-neighbor zoom. Tk's PhotoImage.zoom refuses anything outside this
+# range, and the viewer process runs with its stderr discarded, so an
+# out-of-range value would surface as a blank dialog with no error anywhere.
+QR_ZOOM_MIN, QR_ZOOM_MAX = 1, 4
 
 
 def _env(name: str, default: str) -> str:
@@ -45,6 +54,13 @@ class Settings:
     search_scroll_ms: int = field(
         default_factory=lambda: _env_int("LINE_EXT_MSG_SEARCH_SCROLL_MS", 60000)
     )
+    # Hard ceiling on the budget derived from `limit`, whichever path asks for
+    # it. Without a knob, a room with a long archive stays pinned to five
+    # minutes and reports truncated: true forever. Set it to 0 or less to let
+    # `limit` decide on its own with no ceiling at all.
+    scroll_cap_ms: int = field(
+        default_factory=lambda: _env_int("LINE_EXT_MSG_SCROLL_CAP_MS", 300000)
+    )
     open_room_wait_ms: int = field(default_factory=lambda: _env_int("LINE_EXT_MSG_OPEN_MS", 3000))
     # How long a graceful CDP close may take before the force kill fallback.
     stop_graceful_ms: int = field(
@@ -54,8 +70,7 @@ class Settings:
     ready_settle_ms: int = field(
         default_factory=lambda: _env_int("LINE_EXT_MSG_READY_SETTLE_MS", 200)
     )
-    # QR dialog zoom. The QR canvas is small, so 2x is readable without the
-    # blockiness of a larger nearest-neighbor zoom.
+    # QR dialog zoom. Clamped to QR_ZOOM_MIN..QR_ZOOM_MAX in __post_init__.
     qr_zoom: int = field(default_factory=lambda: _env_int("LINE_EXT_MSG_QR_ZOOM", 2))
     # Title of the QR dialog window. It shows in the title bar only; the card
     # itself carries the status pill and no app name.
@@ -78,6 +93,16 @@ class Settings:
     debug_rooms: bool = field(
         default_factory=lambda: _env("LINE_EXT_MSG_DEBUG_ROOMS", "").lower() in ("1", "true", "yes")
     )
+
+    def __post_init__(self) -> None:
+        # Frozen dataclass, so the clamp has to go through object.__setattr__.
+        # Clamping rather than falling back to the default keeps the intent of
+        # a caller who asked for the largest readable zoom.
+        if not QR_ZOOM_MIN <= self.qr_zoom <= QR_ZOOM_MAX:
+            clamped = max(QR_ZOOM_MIN, min(QR_ZOOM_MAX, self.qr_zoom))
+            logger.warning("qr_zoom %s is outside %d-%d; using %s",
+                           self.qr_zoom, QR_ZOOM_MIN, QR_ZOOM_MAX, clamped)
+            object.__setattr__(self, "qr_zoom", clamped)
 
     @property
     def cdp_endpoint(self) -> str:
